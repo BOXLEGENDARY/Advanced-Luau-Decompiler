@@ -12,6 +12,6 @@ by: `ZxL`
 
 ## Credits
 
-[w.a.e](https://github.com/w-a-e) - Creator
+[w.a.e](https://github.com/w-a-e) - Owner
 
 [break-core](https://github.com/break-core) - Base64
