@@ -8,7 +8,7 @@ local ENABLED_REMARKS = {
 ------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 local DECOMPILER_TIMEOUT = 2 -- seconds
 local READER_FLOAT_PRECISION = 7 -- up to 99
-local DECOMPILER_MODE = "disasm" -- disasm/optdec
+local DECOMPILER_MODE = "optdec" -- disasm/optdec
 local SHOW_DEBUG_INFORMATION = true -- show trivial function and array allocation details
 local SHOW_INSTRUCTION_LINES = true -- show lines as they are in the source code
 local SHOW_OPERATION_NAMES = true
@@ -810,6 +810,395 @@ local function Decompile(bytecode)
 			return embed .. result
 		end
 
+		-- Helper functions for formatting (reused from 'disasm' mode)
+		local function formatRegister(register, numParams)
+			local parameterRegister = register + 1 -- parameter registers start from 0
+			if parameterRegister < numParams + 1 then
+				-- this means we are using preserved parameter register
+				return "p".. ((totalParameters - numParams) + parameterRegister)
+			end
+			return "v".. (register - numParams)
+		end
+
+		local function formatUpvalue(register, captures)
+			-- upvalue registers start from 0 for each function.
+			-- capture index is register - 1 because register index is 1-based.
+			local upvalIndex = register
+			-- the value stored in `captures` at index `upvalIndex - 1` is the source register index
+			local sourceRegister = captures[upvalIndex - 1]
+			if sourceRegister ~= nil then
+				-- This is a capture of a local variable (register)
+				return "u_v"..sourceRegister
+			end
+			-- This is a capture of another upvalue (upvalue of an upvalue)
+			return "u"..upvalIndex
+		end
+
+		local function formatConstantValue(k)
+			if k.type == LuauBytecodeTag.LBC_CONSTANT_VECTOR then
+				return k.value
+			else
+				if type(tonumber(k.value)) == "number" then
+					return tostring(tonumber(string.format(`%0.{READER_FLOAT_PRECISION}f`, k.value)))
+				else
+					return toEscapedString(k.value)
+				end
+			end
+		end
+
+		-- Optdec
+		local function processProtoOptdec(protoActions, currentIndent)
+			currentIndent = currentIndent or 0
+			local indent = string.rep("\t", currentIndent)
+			local result = ""
+
+			local actions = protoActions.actions
+			local proto = protoActions.proto
+			local constants = proto.constants
+			local captures = proto.captures
+			local numParams = proto.numParams
+
+			local function writeLine(line)
+				result ..= indent .. line .. "\n"
+			end
+			
+			local function optdecFormatRegister(register)
+				return formatRegister(register, numParams)
+			end
+			
+			local function optdecFormatUpvalue(register)
+				return formatUpvalue(register, captures)
+			end
+			
+			for i, action in actions do
+				if action.hide then
+					continue
+				end
+
+				local usedRegisters = action.usedRegisters
+				local extraData = action.extraData
+				local opCodeName = action.opCode.name
+
+				local args = {}
+				for k, v in extraData or {} do args[k] = v end
+
+				local A, B, C, D, sD, aux
+				if usedRegisters[1] ~= nil then A = usedRegisters[1] end
+				if usedRegisters[2] ~= nil then B = usedRegisters[2] end
+				if usedRegisters[3] ~= nil then C = usedRegisters[3] end
+				
+				if opCodeName == "LOADN" or opCodeName == "JUMP" or opCodeName == "JUMPBACK" or opCodeName == "JUMPIF" or opCodeName == "JUMPIFNOT" or opCodeName == "FORNPREP" or opCodeName == "FORNLOOP" or opCodeName == "FORGPREP" or opCodeName == "FORGLOOP" then
+					sD = args[1]
+				elseif opCodeName == "LOADK" or opCodeName == "NEWCLOSURE" or opCodeName == "DUPCLOSURE" then
+					D = args[1]
+				elseif opCodeName == "GETGLOBAL" or opCodeName == "SETGLOBAL" or opCodeName == "LOADKX" then
+					aux = args[1]
+				elseif opCodeName == "GETIMPORT" then
+					D = args[1]
+					aux = args[2]
+				elseif opCodeName == "GETTABLEKS" or opCodeName == "SETTABLEKS" or opCodeName == "NAMECALL" or opCodeName == "FASTCALL2K" then
+					if #args >= 2 then aux = args[2] end
+					if opCodeName == "FASTCALL2K" then aux = args[3] end
+				elseif opCodeName == "JUMPX" then
+					D = args[1]
+				end
+
+
+				if opCodeName == "LOADNIL" then
+					writeLine(optdecFormatRegister(A) .. " = nil")
+				elseif opCodeName == "LOADB" then
+					local value = toBoolean(args[1])
+					writeLine(optdecFormatRegister(A) .. " = " .. tostring(value))
+				elseif opCodeName == "LOADN" then
+					writeLine(optdecFormatRegister(A) .. " = " .. tostring(sD))
+				elseif opCodeName == "LOADK" or opCodeName == "LOADKX" then
+					local constIndex = D or aux
+					local value = formatConstantValue(constants[constIndex + 1])
+					writeLine(optdecFormatRegister(A) .. " = " .. value)
+				elseif opCodeName == "MOVE" then
+					writeLine(optdecFormatRegister(A) .. " = " .. optdecFormatRegister(B))
+				elseif opCodeName == "GETGLOBAL" then
+					local globalKey = tostring(constants[aux + 1].value)
+					if LIST_USED_GLOBALS and isValidGlobal(globalKey) then
+						table.insert(usedGlobals, globalKey)
+					end
+					writeLine(optdecFormatRegister(A) .. " = " .. globalKey)
+				elseif opCodeName == "SETGLOBAL" then
+					local globalKey = tostring(constants[aux + 1].value)
+					if LIST_USED_GLOBALS and isValidGlobal(globalKey) then
+						table.insert(usedGlobals, globalKey)
+					end
+					writeLine(globalKey .. " = " .. optdecFormatRegister(A))
+				elseif opCodeName == "GETUPVAL" then
+					writeLine(optdecFormatRegister(A) .. " = " .. optdecFormatUpvalue(B))
+				elseif opCodeName == "SETUPVAL" then
+					writeLine(optdecFormatUpvalue(B) .. " = " .. optdecFormatRegister(A))
+				elseif opCodeName == "GETIMPORT" then
+					local import = tostring(constants[D + 1].value)
+					local totalIndices = bit32.rshift(aux, 30)
+					if totalIndices == 1 and LIST_USED_GLOBALS and isValidGlobal(import) then
+						table.insert(usedGlobals, import)
+					end
+					writeLine(optdecFormatRegister(A) .. " = " .. import)
+				elseif opCodeName == "GETTABLE" then
+					writeLine(optdecFormatRegister(A) .. " = " .. optdecFormatRegister(B) .. "[" .. optdecFormatRegister(C) .. "]")
+				elseif opCodeName == "SETTABLE" then
+					writeLine(optdecFormatRegister(B) .. "[" .. optdecFormatRegister(C) .. "] = " .. optdecFormatRegister(A))
+				elseif opCodeName == "GETTABLEKS" then
+					local key = constants[aux + 1].value
+					writeLine(optdecFormatRegister(A) .. " = " .. optdecFormatRegister(B) .. formatIndexString(key))
+				elseif opCodeName == "SETTABLEKS" then
+					local key = constants[aux + 1].value
+					writeLine(optdecFormatRegister(B) .. formatIndexString(key) .. " = " .. optdecFormatRegister(A))
+				elseif opCodeName == "GETTABLEN" then
+					writeLine(optdecFormatRegister(A) .. " = " .. optdecFormatRegister(B) .. "[" .. (C + 1) .. "]")
+				elseif opCodeName == "SETTABLEN" then
+					writeLine(optdecFormatRegister(B) .. "[" .. (C + 1) .. "] = " .. optdecFormatRegister(A))
+				elseif opCodeName == "NEWCLOSURE" or opCodeName == "DUPCLOSURE" then
+					local nextProto
+					if opCodeName == "NEWCLOSURE" then
+						nextProto = proto.innerProtos[D + 1]
+					else
+						nextProto = protoTable[constants[D + 1].value - 1]
+					end
+
+					local funcName = nextProto.name
+					
+					local paramString = ""
+					local p_totalParameters = totalParameters + numParams
+					for index = 1, nextProto.numParams do
+						local p_name = "p".. (p_totalParameters + index)
+						
+						local isTyped = nextProto.hasTypeInfo and USE_TYPE_INFO
+						if isTyped and nextProto.typedParams[index] then
+							p_name ..= ": ".. Luau:GetBaseTypeString(nextProto.typedParams[index], true)
+						end
+						paramString ..= p_name
+						if index ~= nextProto.numParams then paramString ..= ", " end
+					end
+
+					if nextProto.isVarArg then
+						if nextProto.numParams > 0 then paramString ..= ", " end
+						paramString ..= "..."
+					end
+					
+					local isMain = proto.main
+					
+					local closureDeclaration
+					if funcName then
+						closureDeclaration = "local function ".. funcName .. "(".. paramString ..")"
+					else
+						closureDeclaration = "function (".. paramString ..")"
+					end
+					
+					writeLine(closureDeclaration)
+					
+					local oldTotalParameters = totalParameters
+					totalParameters = p_totalParameters
+					
+					result ..= processProtoOptdec(registerActions[nextProto.id], currentIndent + 1)
+
+					totalParameters = oldTotalParameters
+					
+					writeLine("end")
+					
+					if not funcName or isMain then
+						local assignment
+						if funcName then
+							assignment = optdecFormatRegister(A) .. " = " .. funcName
+						else
+							assignment = optdecFormatRegister(A) .. " = " .. (isMain and "" or "local ") .. closureDeclaration .. " ... end" -- Simplified inline for named func in main chunk
+						end
+						writeLine(assignment)
+					end
+
+				elseif opCodeName == "CALL" then
+					local baseRegister = A
+					local numArguments = args[1] - 1
+					local numResults = args[2] - 1
+					
+					local callString = ""
+					local argString = ""
+					local namecallMethod = nil
+					local argumentOffset = 0
+
+					-- Look for NAMECALL
+					local precedingAction = actions[i - 1]
+					if precedingAction and precedingAction.opCode.name == "NAMECALL" then
+						local const_idx = precedingAction.extraData[2]
+						namecallMethod = ":".. tostring(constants[const_idx + 1].value)
+						numArguments = numArguments - 1
+						argumentOffset = 1
+					end
+					
+					for k = 1, numArguments do
+						argString ..= optdecFormatRegister(baseRegister + k + argumentOffset)
+						if k ~= numArguments then argString ..= ", " end
+					end
+					if numArguments == -1 then argString = "..." end
+					
+					local funcCall = optdecFormatRegister(baseRegister) .. (namecallMethod or "") .. "(" .. argString .. ")"
+
+					if numResults == -1 then -- MULTRET
+						callString = "... = " .. funcCall
+					elseif numResults == 0 then -- NO RETURN
+						callString = funcCall
+					else
+						local retString = ""
+						for k = 1, numResults do
+							retString ..= optdecFormatRegister(baseRegister + k - 1)
+							if k ~= numResults then retString ..= ", " end
+						end
+						callString = retString .. " = " .. funcCall
+					end
+					writeLine(callString)
+				elseif opCodeName == "RETURN" then
+					local baseRegister = A
+					local totalValues = args[1] - 2
+					
+					local retBody = ""
+					
+					if totalValues == -2 then -- MULTRET
+						retBody = formatRegister(baseRegister, numParams) .. ", ..."
+					elseif totalValues > -1 then
+						for k = 0, totalValues do
+							retBody ..= formatRegister(baseRegister + k, numParams)
+							if k ~= totalValues then retBody ..= ", " end
+						end
+					end
+					writeLine("return " .. retBody)
+				
+				-- JUMP and CONTROL FLOW (Very simplified, just showing the target)
+				elseif opCodeName == "JUMP" or opCodeName == "JUMPX" or opCodeName == "JUMPBACK" then
+					writeLine("-- jump to #" .. (i + sD))
+				elseif opCodeName == "JUMPIF" then
+					writeLine("-- if not ".. optdecFormatRegister(A) .. " then goto #".. (i + sD))
+				elseif opCodeName == "JUMPIFNOT" then
+					writeLine("-- if ".. optdecFormatRegister(A) .. " then goto #".. (i + sD))
+				elseif opCodeName:sub(1, 6) == "JUMPIF" then
+					writeLine("-- comparison jump op: " .. opCodeName .. " goto #" .. (i + sD))
+				
+				-- Simple arithmetic
+				elseif opCodeName == "ADD" then
+					writeLine(optdecFormatRegister(A) .. " = " .. optdecFormatRegister(B) .. " + " .. optdecFormatRegister(C))
+				elseif opCodeName == "SUB" then
+					writeLine(optdecFormatRegister(A) .. " = " .. optdecFormatRegister(B) .. " - " .. optdecFormatRegister(C))
+				elseif opCodeName == "MUL" then
+					writeLine(optdecFormatRegister(A) .. " = " .. optdecFormatRegister(B) .. " * " .. optdecFormatRegister(C))
+				elseif opCodeName == "DIV" then
+					writeLine(optdecFormatRegister(A) .. " = " .. optdecFormatRegister(B) .. " / " .. optdecFormatRegister(C))
+				elseif opCodeName == "MOD" then
+					writeLine(optdecFormatRegister(A) .. " = " .. optdecFormatRegister(B) .. " % " .. optdecFormatRegister(C))
+				elseif opCodeName == "POW" then
+					writeLine(optdecFormatRegister(A) .. " = " .. optdecFormatRegister(B) .. " ^ " .. optdecFormatRegister(C))
+				
+				elseif opCodeName == "ADDK" or opCodeName == "SUBK" or opCodeName == "MULK" or opCodeName == "DIVK" or opCodeName == "MODK" or opCodeName == "POWK" or opCodeName == "IDIVK" then
+					local op = opCodeName:sub(1, 3)
+					local sign = ""
+					if op == "ADD" then sign = " + "
+					elseif op == "SUB" then sign = " - "
+					elseif op == "MUL" then sign = " * "
+					elseif op == "DIV" then sign = " / "
+					elseif op == "MOD" then sign = " % "
+					elseif op == "POW" then sign = " ^ "
+					elseif op == "IDI" then sign = " // " end
+					
+					local value = formatConstantValue(constants[C + 1])
+					writeLine(optdecFormatRegister(A) .. " = " .. optdecFormatRegister(B) .. sign .. value)
+
+				elseif opCodeName == "SUBRK" or opCodeName == "DIVRK" then
+					local op = opCodeName:sub(1, 3)
+					local sign = op == "SUB" and " - " or " / "
+					local value = formatConstantValue(constants[B + 1]) -- Note: B holds the constant index for RK ops
+					writeLine(optdecFormatRegister(A) .. " = " .. value .. sign .. optdecFormatRegister(C))
+				
+				-- Bitwise/Logical
+				elseif opCodeName == "AND" then
+					writeLine(optdecFormatRegister(A) .. " = " .. optdecFormatRegister(B) .. " and " .. optdecFormatRegister(C))
+				elseif opCodeName == "OR" then
+					writeLine(optdecFormatRegister(A) .. " = " .. optdecFormatRegister(B) .. " or " .. optdecFormatRegister(C))
+				elseif opCodeName == "ANDK" then
+					local value = formatConstantValue(constants[C + 1])
+					writeLine(optdecFormatRegister(A) .. " = " .. optdecFormatRegister(B) .. " and " .. value)
+				elseif opCodeName == "ORK" then
+					local value = formatConstantValue(constants[C + 1])
+					writeLine(optdecFormatRegister(A) .. " = " .. optdecFormatRegister(B) .. " or " .. value)
+
+				elseif opCodeName == "CONCAT" then
+					local concatBody = ""
+					for k = 2, #usedRegisters do
+						concatBody ..= optdecFormatRegister(usedRegisters[k])
+						if k ~= #usedRegisters then concatBody ..= " .. " end
+					end
+					writeLine(optdecFormatRegister(A) .. " = " .. concatBody)
+				elseif opCodeName == "NOT" then
+					writeLine(optdecFormatRegister(A) .. " = not " .. optdecFormatRegister(B))
+				elseif opCodeName == "MINUS" then
+					writeLine(optdecFormatRegister(A) .. " = -" .. optdecFormatRegister(B))
+				elseif opCodeName == "LENGTH" then
+					writeLine(optdecFormatRegister(A) .. " = #" .. optdecFormatRegister(B))
+				elseif opCodeName == "NEWTABLE" then
+					writeLine(optdecFormatRegister(A) .. " = {}")
+				elseif opCodeName == "DUPTABLE" then
+					local value = constants[D + 1].value
+					writeLine(optdecFormatRegister(A) .. " = {} -- Duplicated from constant table")
+				elseif opCodeName == "SETLIST" then
+					local startIndex = args[1]
+					local totalValues = #usedRegisters - 1
+
+					for k = 2, #usedRegisters do
+						local register = usedRegisters[k]
+						local offset = k - 2
+						writeLine(optdecFormatRegister(A) .. "[".. startIndex + offset .."] = ".. optdecFormatRegister(register))
+					end
+				elseif opCodeName == "GETVARARGS" then
+					local variableCount = args[1] - 1
+					local retBody = ""
+					if variableCount == -1 then
+						retBody = optdecFormatRegister(A) .. " = ..."
+					else
+						for k = 1, variableCount do
+							local register = usedRegisters[k]
+							retBody ..= optdecFormatRegister(register)
+
+							if k ~= variableCount then
+								retBody ..= ", "
+							end
+						end
+						retBody ..= " = ..."
+					end
+					writeLine(retBody)
+				elseif opCodeName == "FORGPREP" then
+					local jumpOffset = args[1] + 2
+					local endIndex = i + jumpOffset
+
+					local endAction = actions[endIndex]
+					local endUsedRegisters = endAction.usedRegisters
+
+					local variablesBody = ""
+					local totalRegisters = #endUsedRegisters
+					for k, register in endUsedRegisters do
+						variablesBody ..= optdecFormatRegister(register)
+
+						if k ~= totalRegisters then variablesBody ..= ", " end
+					end
+					
+					writeLine("for ".. variablesBody .." in ".. optdecFormatRegister(A) .." do -- ends at #".. endIndex)
+				elseif opCodeName == "FORGLOOP" or opCodeName == "FORNLOOP" then
+					writeLine("end -- loop jump to #".. (i + sD))
+
+				elseif opCodeName == "FORGPREP_INEXT" then
+					writeLine("for ".. optdecFormatRegister(A+2) ..", ".. optdecFormatRegister(A+3) .." in ipairs(".. optdecFormatRegister(A) ..") do")
+				elseif opCodeName == "FORGPREP_NEXT" then
+					writeLine("for ".. optdecFormatRegister(A+2) ..", ".. optdecFormatRegister(A+3) .." in pairs(".. optdecFormatRegister(A) ..") do")
+				
+				else
+					writeLine("-- UNHANDLED: " .. opCodeName .. " " .. table.concat(usedRegisters, ", "))
+				end
+			end
+			return result
+		end
+		
 		-- now proceed based off mode
 		if DECOMPILER_MODE == "disasm" then -- disassembler
 			local result = ""
@@ -1826,13 +2215,23 @@ local function Decompile(bytecode)
 			writeActions(registerActions[mainProtoId])
 
 			finalResult = processResult(result)
-		else -- assume optdec - optimized decompiler
+		else -- optdec
 			local result = ""
-			-- remove temporary registers and some optimization passes
+			
+			-- 1. Initialize for the main prototype
+			local mainProtoAction = registerActions[mainProtoId]
+			local mainProto = mainProtoAction.proto
+			
+			-- Start the optimized decompile process recursively
+			result = processProtoOptdec(mainProtoAction, 0)
+
+			-- 2. Final code processing/optimization (simple placeholder)
 			local function optimize(code)
-				result = code
+				-- In a fully developed optdec, sophisticated analysis occurs here.
+				-- For now, we return the generated register-based code.
+				return code
 			end
-			optimize("-- one day..")
+			result = optimize(result)
 
 			finalResult = processResult(result)
 		end
