@@ -838,11 +838,15 @@ local function Decompile(bytecode)
 			if k.type == LuauBytecodeTag.LBC_CONSTANT_VECTOR then
 				return k.value
 			else
-				if type(tonumber(k.value)) == "number" then
-					return tostring(tonumber(string.format(`%0.{READER_FLOAT_PRECISION}f`, k.value)))
-				else
-					return toEscapedString(k.value)
+				if type(k.value) == "number" or (type(k.value) == "string" and tonumber(k.value)) then
+					-- Ensure we format numbers safely, including those stored as strings (like imports with numbers)
+					local numValue = tonumber(k.value)
+					if numValue ~= nil then
+						return tostring(tonumber(string.format(`%0.{READER_FLOAT_PRECISION}f`, numValue)))
+					end
 				end
+				-- Default to escaped string for safety if it's not a number or vector
+				return toEscapedString(tostring(k.value or ""))
 			end
 		end
 
@@ -926,19 +930,20 @@ local function Decompile(bytecode)
 		        
 		        elseif opCodeName == "LOADK" or opCodeName == "LOADKX" then
 		            local constIndex = D or aux
-		            local value = formatConstantValue(constants[constIndex + 1])
+		            local const = constants[constIndex + 1]
+					local value = (const and formatConstantValue(const)) or "nil"
 		            writeLine(optdecFormatRegister(A) .. " = " .. value)
 		        
 		        elseif opCodeName == "MOVE" then
 		            writeLine(optdecFormatRegister(A) .. " = " .. optdecFormatRegister(B))
 		        
 		        elseif opCodeName == "GETGLOBAL" then
-		            local globalKey = tostring(constants[aux + 1].value)
+		            local globalKey = tostring(constants[aux + 1].value or "unknown")
 		            if LIST_USED_GLOBALS and isValidGlobal(globalKey) then table.insert(usedGlobals, globalKey) end
 		            writeLine(optdecFormatRegister(A) .. " = " .. globalKey)
 		        
 		        elseif opCodeName == "SETGLOBAL" then
-		            local globalKey = tostring(constants[aux + 1].value)
+		            local globalKey = tostring(constants[aux + 1].value or "unknown")
 		            if LIST_USED_GLOBALS and isValidGlobal(globalKey) then table.insert(usedGlobals, globalKey) end
 		            writeLine(globalKey .. " = " .. optdecFormatRegister(A))
 		        
@@ -952,8 +957,8 @@ local function Decompile(bytecode)
 		            writeLine("-- close upvalues from: " .. optdecFormatRegister(A))
 		        
 		        elseif opCodeName == "GETIMPORT" then
-		            local import = tostring(constants[D + 1].value)
-		            local totalIndices = bit32.rshift(aux, 30)
+		            local import = tostring(constants[D + 1].value or "unknown_import")
+		            local totalIndices = bit32.rshift(aux or 0, 30)
 		            if totalIndices == 1 and LIST_USED_GLOBALS and isValidGlobal(import) then table.insert(usedGlobals, import) end
 		            writeLine(optdecFormatRegister(A) .. " = " .. import)
 		        
@@ -964,11 +969,11 @@ local function Decompile(bytecode)
 		            writeLine(optdecFormatRegister(B) .. "[" .. optdecFormatRegister(C) .. "] = " .. optdecFormatRegister(A))
 		        
 		        elseif opCodeName == "GETTABLEKS" then
-		            local key = constants[aux + 1].value
+		            local key = constants[aux + 1].value or "unknown_key"
 		            writeLine(optdecFormatRegister(A) .. " = " .. optdecFormatRegister(B) .. formatIndexString(key))
 		        
 		        elseif opCodeName == "SETTABLEKS" then
-		            local key = constants[aux + 1].value
+		            local key = constants[aux + 1].value or "unknown_key"
 		            writeLine(optdecFormatRegister(B) .. formatIndexString(key) .. " = " .. optdecFormatRegister(A))
 		        
 		        elseif opCodeName == "GETTABLEN" then
@@ -986,13 +991,19 @@ local function Decompile(bytecode)
 		            end
 		
 		            local funcName = nextProto.name
+		            if funcName == nil or funcName == "" then
+		                funcName = ""
+		            else
+		                funcName = " ".. funcName
+		            end
+		            
 		            local paramString = ""
 		            local p_totalParameters = totalParameters + numParams
 		            
 		            for index = 1, nextProto.numParams do
 		                local p_name = "p".. (p_totalParameters + index)
 		                local isTyped = nextProto.hasTypeInfo and USE_TYPE_INFO and nextProto.typedParams[index]
-		                if isTyped then
+		                if isTyped and nextProto.typedParams[index] ~= nil then
 		                    p_name ..= ": ".. Luau:GetBaseTypeString(nextProto.typedParams[index], true)
 		                end
 		                paramString ..= p_name .. (index ~= nextProto.numParams and ", " or "")
@@ -1003,25 +1014,36 @@ local function Decompile(bytecode)
 		                paramString ..= "..."
 		            end
 		            
-		            local closureDeclaration = (funcName and "local function ".. funcName or "function") .. "(".. paramString ..")"
+		            local closureDeclaration = (funcName ~= "" and "local function".. funcName or "function") .. "(".. paramString ..")"
 		            
 		            writeLine(closureDeclaration)
 		            
 		            local oldTotalParameters = totalParameters
 		            totalParameters = p_totalParameters
 		            
-		            result ..= processProtoOptdec(registerActions[nextProto.id], currentIndent + 1)
+		            local innerResult = processProtoOptdec(registerActions[nextProto.id], currentIndent + 1)
+					if innerResult then
+						result ..= innerResult
+					end
 		
 		            totalParameters = oldTotalParameters
 		            
 		            writeLine("end")
 		            
-		            if not funcName or proto.main then
-		                writeLine(optdecFormatRegister(A) .. " = " .. (funcName or closureDeclaration:gsub("function", "function").. " ... end"))
+		            if funcName == "" or proto.main then
+		                local assignValue
+		                if funcName ~= "" then
+		                    assignValue = string.sub(funcName, 2)
+		                else
+		                    -- Anonymous function
+		                    assignValue = "function(".. paramString ..") ... end"
+		                end
+		                writeLine(optdecFormatRegister(A) .. " = " .. assignValue)
 		            end
 		            
 		        elseif opCodeName == "NAMECALL" then -- Must be consumed by CALL
-		            writeLine("-- NAMECALL: prepare " .. optdecFormatRegister(A) .. ":" .. tostring(constants[aux + 1].value))
+					local method = (aux and constants[aux + 1] and tostring(constants[aux + 1].value or "unknown_method")) or "unknown_method"
+		            writeLine("-- NAMECALL: prepare " .. optdecFormatRegister(A) .. ":" .. method)
 		
 		        elseif opCodeName == "CALL" then
 		            local baseRegister = A
@@ -1036,7 +1058,8 @@ local function Decompile(bytecode)
 		            local precedingAction = actions[i - 1]
 		            if precedingAction and precedingAction.opCode.name == "NAMECALL" then
 		                local const_idx = precedingAction.extraData[2]
-		                namecallMethod = ":".. tostring(constants[const_idx + 1].value)
+						local method = (const_idx and constants[const_idx + 1] and tostring(constants[const_idx + 1].value or "unknown_method")) or "unknown_method"
+		                namecallMethod = ":".. method
 		                numArguments = numArguments - 1
 		                argumentOffset = 1
 		            end
@@ -1045,7 +1068,7 @@ local function Decompile(bytecode)
 		                argString ..= optdecFormatRegister(baseRegister + k + argumentOffset)
 		                if k ~= numArguments then argString ..= ", " end
 		            end
-		            if numArguments == -1 then argString = "..." end
+		            if numArguments < 0 then argString = "..." end
 		            
 		            local funcCall = optdecFormatRegister(baseRegister) .. (namecallMethod or "") .. "(" .. argString .. ")"
 		
@@ -1080,7 +1103,7 @@ local function Decompile(bytecode)
 		        
 		        -- JUMP and CONTROL FLOW (Simplified as comments since full CFL reconstruction is omitted)
 		        elseif opCodeName == "JUMP" or opCodeName == "JUMPX" or opCodeName == "JUMPBACK" then
-		            writeLine("-- jump to #" .. (i + sD))
+		            writeLine("-- jump to #" .. (i + (sD or D)))
 		        
 		        elseif opCodeName == "JUMPIF" then
 		            writeLine("-- if not ".. optdecFormatRegister(A) .. " then goto #".. (i + sD))
@@ -1089,22 +1112,28 @@ local function Decompile(bytecode)
 		            writeLine("-- if ".. optdecFormatRegister(A) .. " then goto #".. (i + sD))
 		        
 		        elseif opCodeName == "JUMPIFEQ" then
-		            writeLine("-- if ".. optdecFormatRegister(A) .. " ~= ".. optdecFormatRegister(aux) .. " then goto #".. (i + sD))
+					local B_or_aux = optdecFormatRegister(aux)
+		            writeLine("-- if ".. optdecFormatRegister(A) .. " ~= ".. B_or_aux .. " then goto #".. (i + sD))
 		        elseif opCodeName == "JUMPIFLE" then
-		            writeLine("-- if ".. optdecFormatRegister(A) .. " > ".. optdecFormatRegister(aux) .. " then goto #".. (i + sD))
+					local B_or_aux = optdecFormatRegister(aux)
+		            writeLine("-- if ".. optdecFormatRegister(A) .. " > ".. B_or_aux .. " then goto #".. (i + sD))
 		        elseif opCodeName == "JUMPIFLT" then
-		            writeLine("-- if ".. optdecFormatRegister(A) .. " >= ".. optdecFormatRegister(aux) .. " then goto #".. (i + sD))
+					local B_or_aux = optdecFormatRegister(aux)
+		            writeLine("-- if ".. optdecFormatRegister(A) .. " >= ".. B_or_aux .. " then goto #".. (i + sD))
 		        
 		        elseif opCodeName == "JUMPIFNOTEQ" then
-		            writeLine("-- if ".. optdecFormatRegister(A) .. " == ".. optdecFormatRegister(aux) .. " then goto #".. (i + sD))
+					local B_or_aux = optdecFormatRegister(aux)
+		            writeLine("-- if ".. optdecFormatRegister(A) .. " == ".. B_or_aux .. " then goto #".. (i + sD))
 		        elseif opCodeName == "JUMPIFNOTLE" then
-		            writeLine("-- if ".. optdecFormatRegister(A) .. " <= ".. optdecFormatRegister(aux) .. " then goto #".. (i + sD))
+					local B_or_aux = optdecFormatRegister(aux)
+		            writeLine("-- if ".. optdecFormatRegister(A) .. " <= ".. B_or_aux .. " then goto #".. (i + sD))
 		        elseif opCodeName == "JUMPIFNOTLT" then
-		            writeLine("-- if ".. optdecFormatRegister(A) .. " < ".. optdecFormatRegister(aux) .. " then goto #".. (i + sD))
+					local B_or_aux = optdecFormatRegister(aux)
+		            writeLine("-- if ".. optdecFormatRegister(A) .. " < ".. B_or_aux .. " then goto #".. (i + sD))
 		        
 		        elseif opCodeName:sub(1, 7) == "JUMPXEQ" then
-		            local constIndex = bit32.band(aux, 0xFFFFFF)
-		            local reverse = bit32.rshift(aux, 0x1F) == 1
+		            local constIndex = bit32.band(aux or 0, 0xFFFFFF)
+		            local reverse = bit32.rshift(aux or 0, 0x1F) == 1
 		            local sign = if reverse then "==" else "~="
 		            local valString
 		
@@ -1113,7 +1142,8 @@ local function Decompile(bytecode)
 		            elseif opCodeName == "JUMPXEQKB" then
 		                valString = tostring(toBoolean(constIndex))
 		            else
-		                valString = formatConstantValue(constants[constIndex + 1])
+						local const = constants[constIndex + 1]
+		                valString = (const and formatConstantValue(const)) or "nil"
 		            end
 		            writeLine("-- if ".. optdecFormatRegister(A) .. " ".. sign .. " ".. valString .." then goto #".. (i + sD))
 		            
@@ -1145,13 +1175,15 @@ local function Decompile(bytecode)
 		            elseif op == "POW" then sign = " ^ "
 		            elseif op == "IDI" then sign = " // " end
 		            
-		            local value = formatConstantValue(constants[C + 1])
+					local const = constants[C + 1]
+		            local value = (const and formatConstantValue(const)) or "nil"
 		            writeLine(optdecFormatRegister(A) .. " = " .. optdecFormatRegister(B) .. sign .. value)
 		
 		        elseif opCodeName == "SUBRK" or opCodeName == "DIVRK" then
 		            local op = opCodeName:sub(1, 3)
 		            local sign = op == "SUB" and " - " or " / "
-		            local value = formatConstantValue(constants[B + 1])
+					local const = constants[B + 1]
+		            local value = (const and formatConstantValue(const)) or "nil"
 		            writeLine(optdecFormatRegister(A) .. " = " .. value .. sign .. optdecFormatRegister(C))
 		        
 		        -- Logical/Bitwise
@@ -1160,10 +1192,12 @@ local function Decompile(bytecode)
 		        elseif opCodeName == "OR" then
 		            writeLine(optdecFormatRegister(A) .. " = " .. optdecFormatRegister(B) .. " or " .. optdecFormatRegister(C))
 		        elseif opCodeName == "ANDK" then
-		            local value = formatConstantValue(constants[C + 1])
+					local const = constants[C + 1]
+		            local value = (const and formatConstantValue(const)) or "nil"
 		            writeLine(optdecFormatRegister(A) .. " = " .. optdecFormatRegister(B) .. " and " .. value)
 		        elseif opCodeName == "ORK" then
-		            local value = formatConstantValue(constants[C + 1])
+					local const = constants[C + 1]
+		            local value = (const and formatConstantValue(const)) or "nil"
 		            writeLine(optdecFormatRegister(A) .. " = " .. optdecFormatRegister(B) .. " or " .. value)
 		
 		        elseif opCodeName == "CONCAT" then
@@ -1188,7 +1222,8 @@ local function Decompile(bytecode)
 		            writeLine(optdecFormatRegister(A) .. " = {}" .. (aux ~= 0 and " -- hash: ".. B .. ", array: ".. aux or ""))
 		        
 		        elseif opCodeName == "DUPTABLE" then
-		            local value = constants[D + 1].value
+					local const = constants[D + 1]
+		            local value = (const and const.value) or {size=0}
 		            writeLine(optdecFormatRegister(A) .. " = {} -- Duplicated from constant table with size " .. value.size)
 		
 		        elseif opCodeName == "SETLIST" then
@@ -1245,7 +1280,7 @@ local function Decompile(bytecode)
 		            local jumpOffset = sD
 		            local endIndex = i + jumpOffset
 		
-		            local numVariableRegisters = bit32.band(aux, 0xFF)
+		            local numVariableRegisters = bit32.band(aux or 0, 0xFF)
 		            local variablesBody = ""
 		            for k = 1, numVariableRegisters do
 		                variablesBody ..= optdecFormatRegister(A + k)
@@ -1278,29 +1313,30 @@ local function Decompile(bytecode)
 		        -- Fast Calls (Built-in functions)
 		        elseif opCodeName == "FASTCALL" then
 		            local bfid = args[1]
-		            local funcName = Luau:GetBuiltinInfo(bfid)
+		            local funcName = Luau:GetBuiltinInfo(bfid) or "unknown_builtin"
 		            writeLine(optdecFormatRegister(A) .. " = " .. funcName .. "()")
 		        
 		        elseif opCodeName == "FASTCALL1" then
 		            local bfid = args[1]
-		            local funcName = Luau:GetBuiltinInfo(bfid)
+		            local funcName = Luau:GetBuiltinInfo(bfid) or "unknown_builtin"
 		            writeLine(optdecFormatRegister(A) .. " = " .. funcName .. "(" .. optdecFormatRegister(B) .. ")")
 		            
 		        elseif opCodeName == "FASTCALL2" then
 		            local bfid = args[1]
-		            local funcName = Luau:GetBuiltinInfo(bfid)
+		            local funcName = Luau:GetBuiltinInfo(bfid) or "unknown_builtin"
 		            local arg2 = usedRegisters[2]
 		            writeLine(optdecFormatRegister(A) .. " = " .. funcName .. "(" .. optdecFormatRegister(B) .. ", " .. optdecFormatRegister(arg2) .. ")")
 		        
 		        elseif opCodeName == "FASTCALL2K" then
 		            local bfid = args[1]
-		            local funcName = Luau:GetBuiltinInfo(bfid)
-		            local value = formatConstantValue(constants[aux + 1])
+		            local funcName = Luau:GetBuiltinInfo(bfid) or "unknown_builtin"
+					local const = constants[aux + 1]
+		            local value = (const and formatConstantValue(const)) or "nil"
 		            writeLine(optdecFormatRegister(A) .. " = " .. funcName .. "(" .. optdecFormatRegister(B) .. ", " .. value .. ")")
 		            
 		        elseif opCodeName == "FASTCALL3" then
 		            local bfid = args[1]
-		            local funcName = Luau:GetBuiltinInfo(bfid)
+		            local funcName = Luau:GetBuiltinInfo(bfid) or "unknown_builtin"
 		            local arg2 = usedRegisters[2]
 		            local arg3 = usedRegisters[3]
 		            writeLine(optdecFormatRegister(A) .. " = " .. funcName .. "(" .. optdecFormatRegister(B) .. ", " .. optdecFormatRegister(arg2) .. ", " .. optdecFormatRegister(arg3) .. ")")
@@ -1509,11 +1545,13 @@ local function Decompile(bytecode)
 							if k.type == LuauBytecodeTag.LBC_CONSTANT_VECTOR then
 								return k.value
 							else
-								if type(tonumber(k.value)) == "number" then
-									return tonumber(string.format(`%0.{READER_FLOAT_PRECISION}f`, k.value))
-								else
-									return toEscapedString(k.value)
+								if type(k.value) == "number" or (type(k.value) == "string" and tonumber(k.value)) then
+									local numValue = tonumber(k.value)
+									if numValue ~= nil then
+										return tostring(tonumber(string.format(`%0.{READER_FLOAT_PRECISION}f`, numValue)))
+									end
 								end
+								return toEscapedString(tostring(k.value or ""))
 							end
 						end
 
@@ -1557,7 +1595,8 @@ local function Decompile(bytecode)
 						elseif opCodeName == "LOADK" then -- load constant
 							local targetRegister = usedRegisters[1]
 
-							local value = formatConstantValue(constants[extraData[1] + 1])
+							local const = constants[extraData[1] + 1]
+							local value = (const and formatConstantValue(const)) or "nil"
 
 							result ..= formatRegister(targetRegister) .." = ".. value
 						elseif opCodeName == "MOVE" then
@@ -1569,7 +1608,7 @@ local function Decompile(bytecode)
 							local targetRegister = usedRegisters[1]
 
 							-- formatConstantValue uses toEscapedString which we don't want here
-							local globalKey = tostring(constants[extraData[1] + 1].value)
+							local globalKey = tostring(constants[extraData[1] + 1].value or "unknown")
 
 							if LIST_USED_GLOBALS and isValidGlobal(globalKey) then
 								table.insert(usedGlobals, globalKey)
@@ -1579,7 +1618,7 @@ local function Decompile(bytecode)
 						elseif opCodeName == "SETGLOBAL" then
 							local sourceRegister = usedRegisters[1]
 
-							local globalKey = tostring(constants[extraData[1] + 1].value)
+							local globalKey = tostring(constants[extraData[1] + 1].value or "unknown")
 
 							if LIST_USED_GLOBALS and isValidGlobal(globalKey) then
 								table.insert(usedGlobals, globalKey)
@@ -1609,9 +1648,9 @@ local function Decompile(bytecode)
 							local importIndices = extraData[2]
 
 							-- we load imports into constants
-							local import = tostring(constants[importIndex + 1].value)
+							local import = tostring(constants[importIndex + 1].value or "unknown_import")
 
-							local totalIndices = bit32.rshift(importIndices, 30)
+							local totalIndices = bit32.rshift(importIndices or 0, 30)
 							if totalIndices == 1 then
 								if LIST_USED_GLOBALS and isValidGlobal(import) then
 									-- it is a non-Roblox global that we need to log
@@ -1637,7 +1676,7 @@ local function Decompile(bytecode)
 							local tableRegister = usedRegisters[2]
 
 							--local slotIndex = extraData[1]
-							local key = constants[extraData[2] + 1].value
+							local key = constants[extraData[2] + 1].value or "unknown_key"
 
 							result ..= formatRegister(targetRegister) .." = ".. formatRegister(tableRegister) .. formatIndexString(key)
 						elseif opCodeName == "SETTABLEKS" then
@@ -1645,7 +1684,7 @@ local function Decompile(bytecode)
 							local tableRegister = usedRegisters[2]
 
 							--local slotIndex = extraData[1]
-							local key = constants[extraData[2] + 1].value
+							local key = constants[extraData[2] + 1].value or "unknown_key"
 
 							result ..= formatRegister(tableRegister) .. formatIndexString(key) .." = ".. formatRegister(sourceRegister)
 						elseif opCodeName == "GETTABLEN" then
@@ -1681,7 +1720,7 @@ local function Decompile(bytecode)
 							--local sourceRegister = usedRegisters[2]
 
 							--local slotIndex = extraData[1]
-							local method = tostring(constants[extraData[2] + 1].value)
+							local method = tostring(constants[extraData[2] + 1].value or "unknown_method")
 
 							result ..= "-- :".. method
 						elseif opCodeName == "CALL" then
@@ -1700,7 +1739,7 @@ local function Decompile(bytecode)
 								local precedingOpCode = precedingAction.opCode
 								if precedingOpCode.name == "NAMECALL" then
 									local precedingExtraData = precedingAction.extraData
-									namecallMethod = ":".. tostring(constants[precedingExtraData[2] + 1].value)
+									namecallMethod = ":".. tostring(constants[precedingExtraData[2] + 1].value or "unknown_method")
 
 									-- exclude self due to syntactic sugar
 									numArguments -= 1
@@ -1921,42 +1960,48 @@ local function Decompile(bytecode)
 							local targetRegister = usedRegisters[1]
 							local sourceRegister = usedRegisters[2]
 
-							local value = formatConstantValue(constants[extraData[1] + 1])
+							local const = constants[extraData[1] + 1]
+							local value = (const and formatConstantValue(const)) or "nil"
 
 							result ..= formatRegister(targetRegister) .." = ".. formatRegister(sourceRegister) .." + ".. value
 						elseif opCodeName == "SUBK" then
 							local targetRegister = usedRegisters[1]
 							local sourceRegister = usedRegisters[2]
 
-							local value = formatConstantValue(constants[extraData[1] + 1])
+							local const = constants[extraData[1] + 1]
+							local value = (const and formatConstantValue(const)) or "nil"
 
 							result ..= formatRegister(targetRegister) .." = ".. formatRegister(sourceRegister) .." - ".. value
 						elseif opCodeName == "MULK" then
 							local targetRegister = usedRegisters[1]
 							local sourceRegister = usedRegisters[2]
 
-							local value = formatConstantValue(constants[extraData[1] + 1])
+							local const = constants[extraData[1] + 1]
+							local value = (const and formatConstantValue(const)) or "nil"
 
 							result ..= formatRegister(targetRegister) .." = ".. formatRegister(sourceRegister) .." * ".. value
 						elseif opCodeName == "DIVK" then
 							local targetRegister = usedRegisters[1]
 							local sourceRegister = usedRegisters[2]
 
-							local value = formatConstantValue(constants[extraData[1] + 1])
+							local const = constants[extraData[1] + 1]
+							local value = (const and formatConstantValue(const)) or "nil"
 
 							result ..= formatRegister(targetRegister) .." = ".. formatRegister(sourceRegister) .." / ".. value
 						elseif opCodeName == "MODK" then
 							local targetRegister = usedRegisters[1]
 							local sourceRegister = usedRegisters[2]
 
-							local value = formatConstantValue(constants[extraData[1] + 1])
+							local const = constants[extraData[1] + 1]
+							local value = (const and formatConstantValue(const)) or "nil"
 
 							result ..= formatRegister(targetRegister) .." = ".. formatRegister(sourceRegister) .." % ".. value
 						elseif opCodeName == "POWK" then
 							local targetRegister = usedRegisters[1]
 							local sourceRegister = usedRegisters[2]
 
-							local value = formatConstantValue(constants[extraData[1] + 1])
+							local const = constants[extraData[1] + 1]
+							local value = (const and formatConstantValue(const)) or "nil"
 
 							result ..= formatRegister(targetRegister) .." = ".. formatRegister(sourceRegister) .." ^ ".. value
 						elseif opCodeName == "AND" then
@@ -1975,14 +2020,16 @@ local function Decompile(bytecode)
 							local targetRegister = usedRegisters[1]
 							local sourceRegister = usedRegisters[2]
 
-							local value = formatConstantValue(constants[extraData[1] + 1])
+							local const = constants[extraData[1] + 1]
+							local value = (const and formatConstantValue(const)) or "nil"
 
 							result ..= formatRegister(targetRegister) .." = ".. formatRegister(sourceRegister) .." and ".. value
 						elseif opCodeName == "ORK" then
 							local targetRegister = usedRegisters[1]
 							local sourceRegister = usedRegisters[2]
 
-							local value = formatConstantValue(constants[extraData[1] + 1])
+							local const = constants[extraData[1] + 1]
+							local value = (const and formatConstantValue(const)) or "nil"
 
 							result ..= formatRegister(targetRegister) .." = ".. formatRegister(sourceRegister) .." or ".. value
 						elseif opCodeName == "CONCAT" then
@@ -2029,7 +2076,8 @@ local function Decompile(bytecode)
 						elseif opCodeName == "DUPTABLE" then
 							local targetRegister = usedRegisters[1]
 
-							local value = constants[extraData[1] + 1].value
+							local const = constants[extraData[1] + 1]
+							local value = (const and const.value) or {size=0, keys={}}
 							local kSize = value.size
 							local kKeys = value.keys
 
@@ -2168,7 +2216,8 @@ local function Decompile(bytecode)
 						elseif opCodeName == "LOADKX" then
 							local targetRegister = usedRegisters[1]
 
-							local value = formatConstantValue(constants[extraData[1] + 1])
+							local const = constants[extraData[1] + 1]
+							local value = (const and formatConstantValue(const)) or "nil"
 
 							result ..= formatRegister(targetRegister) .." = ".. value
 						elseif opCodeName == "JUMPX" then -- the cooler jump
@@ -2190,7 +2239,7 @@ local function Decompile(bytecode)
 							local jumpOffset = extraData[1] -- if 1 then don't jump
 							local aux = extraData[2]
 
-							local reverse = bit32.rshift(aux, 0x1F) ~= 1
+							local reverse = bit32.rshift(aux or 0, 0x1F) ~= 1
 							local sign = if reverse then "~=" else "=="
 
 							-- where the script will go if the condition is met
@@ -2205,9 +2254,9 @@ local function Decompile(bytecode)
 							local jumpOffset = extraData[1] -- if 1 then don't jump
 							local aux = extraData[2]
 
-							local value = tostring(toBoolean(bit32.band(aux, 1)))
+							local value = tostring(toBoolean(bit32.band(aux or 0, 1)))
 
-							local reverse = bit32.rshift(aux, 0x1F) ~= 1
+							local reverse = bit32.rshift(aux or 0, 0x1F) ~= 1
 							local sign = if reverse then "~=" else "=="
 
 							-- where the script will go if the condition is met
@@ -2222,9 +2271,10 @@ local function Decompile(bytecode)
 							local jumpOffset = extraData[1] -- if 1 then don't jump
 							local aux = extraData[2]
 
-							local value = formatConstantValue(constants[bit32.band(aux, 0xFFFFFF) + 1])
+							local const = constants[bit32.band(aux or 0, 0xFFFFFF) + 1]
+							local value = (const and formatConstantValue(const)) or "nil"
 
-							local reverse = bit32.rshift(aux, 0x1F) ~= 1
+							local reverse = bit32.rshift(aux or 0, 0x1F) ~= 1
 							local sign = if reverse then "~=" else "=="
 
 							-- where the script will go if the condition is met
@@ -2239,9 +2289,10 @@ local function Decompile(bytecode)
 							local jumpOffset = extraData[1] -- if 1 then don't jump
 							local aux = extraData[2]
 
-							local value = formatConstantValue(constants[bit32.band(aux, 0xFFFFFF) + 1])
+							local const = constants[bit32.band(aux or 0, 0xFFFFFF) + 1]
+							local value = (const and formatConstantValue(const)) or "nil"
 
-							local reverse = bit32.rshift(aux, 0x1F) ~= 1
+							local reverse = bit32.rshift(aux or 0, 0x1F) ~= 1
 							local sign = if reverse then "~=" else "=="
 
 							-- where the script will go if the condition is met
@@ -2256,14 +2307,16 @@ local function Decompile(bytecode)
 							local targetRegister = usedRegisters[1]
 							local sourceRegister = usedRegisters[2]
 
-							local value = formatConstantValue(constants[extraData[1] + 1])
+							local const = constants[extraData[1] + 1]
+							local value = (const and formatConstantValue(const)) or "nil"
 
 							result ..= formatRegister(targetRegister) .." = ".. value .." - ".. formatRegister(sourceRegister)
 						elseif opCodeName == "DIVRK" then -- constant div (reverse DIVK)
 							local targetRegister = usedRegisters[1]
 							local sourceRegister = usedRegisters[2]
 
-							local value = formatConstantValue(constants[extraData[1] + 1])
+							local const = constants[extraData[1] + 1]
+							local value = (const and formatConstantValue(const)) or "nil"
 
 							result ..= formatRegister(targetRegister) .." = ".. value .." / ".. formatRegister(sourceRegister)
 						elseif opCodeName == "IDIV" then -- floor division
@@ -2276,7 +2329,8 @@ local function Decompile(bytecode)
 							local targetRegister = usedRegisters[1]
 							local sourceRegister = usedRegisters[2]
 
-							local value = formatConstantValue(constants[extraData[1] + 1])
+							local const = constants[extraData[1] + 1]
+							local value = (const and formatConstantValue(const)) or "nil"
 
 							result ..= formatRegister(targetRegister) .." = ".. formatRegister(sourceRegister) .." // ".. value
 						elseif opCodeName == "FASTCALL" then -- reads info from the CALL instruction
@@ -2290,14 +2344,14 @@ local function Decompile(bytecode)
 							--local callUsedRegisters = callAction.usedRegisters
 							--local callExtraData = callAction.extraData
 
-							result ..= "-- FASTCALL; ".. Luau:GetBuiltinInfo(bfid) .."()"
+							result ..= "-- FASTCALL; ".. (Luau:GetBuiltinInfo(bfid) or "unknown_builtin") .."()"
 						elseif opCodeName == "FASTCALL1" then -- 1 register argument
 							local sourceArgumentRegister = usedRegisters[1]
 
 							local bfid = extraData[1] -- builtin function id
 							--local jumpOffset = extraData[2]
 
-							result ..= "-- FASTCALL1; ".. Luau:GetBuiltinInfo(bfid) .."(".. formatRegister(sourceArgumentRegister) ..")"
+							result ..= "-- FASTCALL1; ".. (Luau:GetBuiltinInfo(bfid) or "unknown_builtin") .."(".. formatRegister(sourceArgumentRegister) ..")"
 						elseif opCodeName == "FASTCALL2" then -- 2 register arguments
 							local sourceArgumentRegister = usedRegisters[1]
 							local sourceArgumentRegister2 = usedRegisters[2]
@@ -2305,15 +2359,16 @@ local function Decompile(bytecode)
 							local bfid = extraData[1] -- builtin function id
 							--local jumpOffset = extraData[2]
 
-							result ..= "-- FASTCALL2; ".. Luau:GetBuiltinInfo(bfid) .."(".. formatRegister(sourceArgumentRegister) ..", ".. formatRegister(sourceArgumentRegister2) ..")"
+							result ..= "-- FASTCALL2; ".. (Luau:GetBuiltinInfo(bfid) or "unknown_builtin") .."(".. formatRegister(sourceArgumentRegister) ..", ".. formatRegister(sourceArgumentRegister2) ..")"
 						elseif opCodeName == "FASTCALL2K" then -- 1 register argument and 1 constant argument
 							local sourceArgumentRegister = usedRegisters[1]
 
 							local bfid = extraData[1] -- builtin function id
 							--local jumpOffset = extraData[2]
-							local value = formatConstantValue(constants[extraData[3] + 1])
+							local const = constants[extraData[3] + 1]
+							local value = (const and formatConstantValue(const)) or "nil"
 
-							result ..= "-- FASTCALL2K; ".. Luau:GetBuiltinInfo(bfid) .."(".. formatRegister(sourceArgumentRegister) ..", ".. value ..")"
+							result ..= "-- FASTCALL2K; ".. (Luau:GetBuiltinInfo(bfid) or "unknown_builtin") .."(".. formatRegister(sourceArgumentRegister) ..", ".. value ..")"
 						elseif opCodeName == "FASTCALL3" then
 							local sourceArgumentRegister = usedRegisters[1]
 							local sourceArgumentRegister2 = usedRegisters[2]
@@ -2321,7 +2376,7 @@ local function Decompile(bytecode)
 
 							local bfid = extraData[1] -- builtin function id
 
-							result ..= "-- FASTCALL3; ".. Luau:GetBuiltinInfo(bfid) .."(".. formatRegister(sourceArgumentRegister) ..", ".. formatRegister(sourceArgumentRegister2) ..", ".. formatRegister(sourceArgumentRegister3) ..")"
+							result ..= "-- FASTCALL3; ".. (Luau:GetBuiltinInfo(bfid) or "unknown_builtin") .."(".. formatRegister(sourceArgumentRegister) ..", ".. formatRegister(sourceArgumentRegister2) ..", ".. formatRegister(sourceArgumentRegister3) ..")"
 						end
 					end
 					local function writeFooter()
