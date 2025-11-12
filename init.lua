@@ -1864,17 +1864,14 @@ local function Decompile(bytecode)
 				local indent = getIndent(indentLevel)
 				local protoStr = ""
 				
-				-- State tracking
 				local locals = {} -- Track declared locals by name
 	
-				-- step1 :PRE-ANALYSIS (Build Debug Maps & Jump Labels)
 				local localNameMap = {} -- [register] -> list of {name, start, stop}
 				local upvalueNameMap = {} -- [index] -> name
 				local jumpTargets = {} -- [pc] -> label_name
 				local labelCounter = 1
 	
 				if proto.hasDebugInfo then
-					-- Build local variable name map
 					if proto.debugLocals then
 						for _, loc in ipairs(proto.debugLocals) do
 							if not localNameMap[loc.register] then
@@ -1887,15 +1884,13 @@ local function Decompile(bytecode)
 							})
 						end
 					end
-					-- Build upvalue name map
 					if proto.debugUpvalues then
 						for i, upv in ipairs(proto.debugUpvalues) do
-							upvalueNameMap[i - 1] = upv.name -- Upvalues are 0-indexed in captures
+							upvalueNameMap[i - 1] = upv.name -- upvalues are 0-indexed in captures
 						end
 					end
 				end
 				
-				-- Pre-pass to find all jump targets and create labels
 				for i, action in actions do
 					if action.hide then continue end
 					
@@ -1910,17 +1905,13 @@ local function Decompile(bytecode)
 					elseif string.sub(op, 1, 7) == "JUMPXEQ" then
 						targetPC = i + extra[1]
 					elseif op == "FORNPREP" then
-						targetPC = i + extra[1] -- Target is the *end* of the loop
+						targetPC = i + extra[1] -- target is the *end* of the loop
 					elseif op == "FORNLOOP" then
-						targetPC = i + extra[1] -- Target is the *start* of the loop
+						targetPC = i + extra[1] -- target is the *start* of the loop
 					elseif op == "FORGPREP" or op == "FORGPREP_NEXT" or op == "FORGPREP_INEXT" then
-						targetPC = i + extra[1] + 2 -- Target is after the FORGLOOP
+						targetPC = i + extra[1] + 2 -- target is after the FORGLOOP
 					elseif op == "FORGLOOP" then
-						targetPC = i + extra[1] -- Target is the *start* of the loop (prep)
-					
-					-- ::: NEW CHANGE HERE :::
-					-- LOADB A,B,C jumps 1 instruction (to i+2) if C ~= 0
-					-- This is crucial for if/else assignment blocks
+						targetPC = i + extra[1] -- target is the *start* of the loop (prep)
 					elseif op == "LOADB" and (extra[2] or 0) ~= 0 then
 						targetPC = i + 2 
 					end
@@ -1930,10 +1921,8 @@ local function Decompile(bytecode)
 						labelCounter = labelCounter + 1
 					end
 				end
-	
-				-- Register Naming Helper (Uses Debug Info)
+
 				local function formatReg(reg, isAssignment, currentPC)
-					-- Try finding a debug name first
 					if localNameMap[reg] then
 						for _, nameInfo in ipairs(localNameMap[reg]) do
 							if currentPC >= nameInfo.start and currentPC <= nameInfo.stop then
@@ -1962,7 +1951,6 @@ local function Decompile(bytecode)
 					return varName
 				end
 				
-				-- Upvalue Naming (Uses Debug Info)
 				local function formatUpval(upvalIdx)
 					if upvalueNameMap[upvalIdx] then
 						return upvalueNameMap[upvalIdx]
@@ -1970,12 +1958,10 @@ local function Decompile(bytecode)
 					return string.format("upvalue_%d", upvalIdx + 1) 
 				end
 	
-				-- step 2: MAIN INSTRUCTION LOOP
 				local namecallCache = nil
 				for i, action in actions do
 					if action.hide then continue end
 					
-					-- Check if this instruction is a jump target
 					if jumpTargets[i] then
 						protoStr ..= indent .. "::" .. jumpTargets[i] .. "::\n"
 					end
@@ -1985,30 +1971,25 @@ local function Decompile(bytecode)
 					local extraData = action.extraData or {}
 					local line = indent
 					
-					-- Helper to format registers for *this* instruction
+					-- helper to format registers for *this* instruction
 					local function R(reg, isAssignment)
 						return formatReg(reg, isAssignment, i)
 					end
 					
-					if opCodeName == "LOADNIL" then
+					if opCodeName == "NOP" or opCodeName == "BREAK" or opCodeName == "NATIVECALL" then
+						line ..= string.format("--[[ %s ]]", opCodeName)
+					elseif opCodeName == "LOADNIL" then
 						line ..= R(usedRegisters[1], true) .. " = nil"
-					
-					-- ::: MODIFIED BLOCK HERE :::
 					elseif opCodeName == "LOADB" then
 						line ..= R(usedRegisters[1], true) .. " = " .. tostring(toBoolean(extraData[1]))
 						if extraData[2] ~= 0 then
-							-- This is a conditional load, part of an if/else block
-							-- It jumps over the next instruction (i+1) to (i+2)
 							local jumpTo = i + 2
 							if jumpTargets[jumpTo] then
 								line ..= "\n" .. indent .. "goto " .. jumpTargets[jumpTo]
 							else
-								-- Fallback, should not happen if pre-pass is correct
 								line ..= string.format(" --[[ Jumps to %d ]]", jumpTo) 
 							end
 						end
-					-- ::: END OF MODIFIED BLOCK :::
-
 					elseif opCodeName == "LOADN" then
 						line ..= R(usedRegisters[1], true) .. " = " .. extraData[1]
 					elseif opCodeName == "LOADK" or opCodeName == "LOADKX" then
@@ -2017,7 +1998,7 @@ local function Decompile(bytecode)
 					elseif opCodeName == "MOVE" then
 						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false)
 						
-					-- Globals & Imports
+					-- globals & Imports
 					elseif opCodeName == "GETGLOBAL" then
 						local globalKey = tostring(constants[extraData[1] + 1].value)
 						if LIST_USED_GLOBALS and isValidGlobal(globalKey) then table.insert(usedGlobals, globalKey) end
@@ -2030,13 +2011,17 @@ local function Decompile(bytecode)
 						local import = tostring(constants[extraData[1] + 1].value)
 						line ..= R(usedRegisters[1], true) .. " = " .. import
 						
-					-- Upvalues
+					-- upvalues
 					elseif opCodeName == "GETUPVAL" then
 						line ..= R(usedRegisters[1], true) .. " = " .. formatUpval(extraData[1])
 					elseif opCodeName == "SETUPVAL" then
 						line ..= formatUpval(extraData[1]) .. " = " .. R(usedRegisters[1], false)
-	
-					-- Tables
+					elseif opCodeName == "CLOSEUPVALS" then
+						line ..= string.format("--[[ clear captures from back until: %s ]]", R(usedRegisters[1], false))
+					elseif opCodeName == "CAPTURE" then
+						line ..= "--[[ upvalue capture ]]"
+
+					-- tables
 					elseif opCodeName == "NEWTABLE" then
 						line ..= R(usedRegisters[1], true) .. " = {}"
 					elseif opCodeName == "GETTABLE" then
@@ -2056,7 +2041,7 @@ local function Decompile(bytecode)
 						local index = extraData[1] + 1
 						line ..= R(usedRegisters[2], false) .. "[" .. index .. "] = " .. R(usedRegisters[1], false)
 						
-					-- Arithmetics
+					-- arithmetics
 					elseif opCodeName == "ADD" then
 						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " + " .. R(usedRegisters[3], false)
 					elseif opCodeName == "SUB" then
@@ -2072,7 +2057,7 @@ local function Decompile(bytecode)
 					elseif opCodeName == "IDIV" then
 						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " // " .. R(usedRegisters[3], false)
 						
-					-- Arithmetic with Constants
+					-- arithmetic with constants
 					elseif opCodeName == "ADDK" then
 						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " + " .. formatConstant(constants[extraData[1] + 1])
 					elseif opCodeName == "SUBK" then
@@ -2092,7 +2077,7 @@ local function Decompile(bytecode)
 					elseif opCodeName == "IDIVK" then
 						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " // " .. formatConstant(constants[extraData[1] + 1])
 						
-					-- Logic
+					-- logic
 					elseif opCodeName == "NOT" then
 						line ..= R(usedRegisters[1], true) .. " = not " .. R(usedRegisters[2], false)
 					elseif opCodeName == "MINUS" then
@@ -2100,7 +2085,7 @@ local function Decompile(bytecode)
 					elseif opCodeName == "LENGTH" then
 						line ..= R(usedRegisters[1], true) .. " = #" .. R(usedRegisters[2], false)
 					
-					-- Logical Ops (Part of `and`/`or` chains, handled by LOADB jumps)
+					-- logical ops
 					elseif opCodeName == "AND" then
 						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " and " .. R(usedRegisters[3], false)
 					elseif opCodeName == "OR" then
@@ -2110,7 +2095,7 @@ local function Decompile(bytecode)
 					elseif opCodeName == "ORK" then
 						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " or " .. formatConstant(constants[extraData[1] + 1])
 					
-					-- String Concat
+					-- string concat
 					elseif opCodeName == "CONCAT" then
 						local parts = {}
 						for reg = usedRegisters[2], usedRegisters[3] do
@@ -2118,7 +2103,7 @@ local function Decompile(bytecode)
 						end
 						line ..= R(usedRegisters[1], true) .. " = " .. table.concat(parts, " .. ")
 						
-					-- Functions & Calls (Smarter Naming)
+					-- functions & calls
 					elseif opCodeName == "NEWCLOSURE" or opCodeName == "DUPCLOSURE" then
 						local targetReg = usedRegisters[1]
 						local nextProto
@@ -2129,13 +2114,12 @@ local function Decompile(bytecode)
 							nextProto = protoTable[constants[extraData[1] + 1].value - 1]
 						end
 						
-						-- Generate function parameters
 						local params = {}
 						if nextProto.hasDebugInfo and nextProto.debugLocals then
 							local paramMap = {}
 							for p = 0, nextProto.numParams - 1 do
 								for _, loc in ipairs(nextProto.debugLocals) do
-									if loc.register == p and loc.startPC == 1 then -- Params are registers 0..N at PC 1
+									if loc.register == p and loc.startPC == 1 then -- params are registers 0..N at PC 1
 										paramMap[p] = loc.name
 										break
 									end
@@ -2145,7 +2129,6 @@ local function Decompile(bytecode)
 								table.insert(params, paramMap[p] or string.format("param_%d", p + 1))
 							end
 						else
-							-- Fallback to old param naming
 							for p = 0, nextProto.numParams - 1 do
 								table.insert(params, string.format("param_%d", p + 1))
 							end
@@ -2153,7 +2136,6 @@ local function Decompile(bytecode)
 						
 						if nextProto.isVarArg then table.insert(params, "...") end
 						
-						-- Check for named function
 						if nextProto.name then
 							line = indent .. "local function " .. nextProto.name .. "(" .. table.concat(params, ", ") .. ")\n"
 							line ..= decompileProto(nextProto.id, indentLevel + 1) -- RECURSION
@@ -2172,7 +2154,7 @@ local function Decompile(bytecode)
 							TableReg = usedRegisters[2],
 							Method = method
 						}
-						line = "" -- Don't output anything yet
+						line = "" -- don't output anything yet
 						
 					elseif opCodeName == "CALL" then
 						local baseReg = usedRegisters[1]
@@ -2231,7 +2213,7 @@ local function Decompile(bytecode)
 							line ..= table.concat(rets, ", ")
 						end
 						
-					-- Varargs
+					-- varargs
 					elseif opCodeName == "GETVARARGS" then
 						local variableCount = extraData[1] - 1
 						local results = {}
@@ -2239,13 +2221,14 @@ local function Decompile(bytecode)
 							table.insert(results, R(usedRegisters[v], true))
 						end
 						line ..= table.concat(results, ", ") .. " = ..."
+					elseif opCodeName == "PREPVARARGS" then
+						line ..= string.format("--[[ ... ; number of fixed args: %d ]]", extraData[1])
 					
-					-- CONTROL FLOW (GOTO)
 					elseif opCodeName == "JUMP" or opCodeName == "JUMPBACK" or opCodeName == "JUMPX" then
 						local target = i + extraData[1]
 						line ..= "goto " .. (jumpTargets[target] or string.format("--[[ INVALID_GOTO_TARGET: %d ]]", target))
 					
-					-- Conditional Jumps
+					-- conditional jumps
 					elseif opCodeName == "JUMPIF" then -- if NOT ... then jump
 						local target = i + extraData[1]
 						line ..= string.format("if not %s then goto %s end", R(usedRegisters[1], false), jumpTargets[target] or target)
@@ -2271,7 +2254,7 @@ local function Decompile(bytecode)
 						local target = i + extraData[1]
 						line ..= string.format("if %s >= %s then goto %s end", R(usedRegisters[1], false), R(usedRegisters[2], false), jumpTargets[target] or target)
 					
-					-- Conditional Jumps with Constants
+					-- conditional jumps with constants
 					elseif opCodeName == "JUMPXEQKNIL" then
 						local target = i + extraData[1]
 						local sign = (bit32.rshift(extraData[2], 0x1F) ~= 1) and "~=" or "=="
@@ -2287,7 +2270,7 @@ local function Decompile(bytecode)
 						local sign = (bit32.rshift(extraData[2], 0x1F) ~= 1) and "~=" or "=="
 						line ..= string.format("if %s %s %s then goto %s end", R(usedRegisters[1], false), sign, formatConstant(const), jumpTargets[target] or target)
 						
-					-- LOOPS (Indentation Handled)
+					-- LOOPS
 					elseif opCodeName == "FORNPREP" then
 						local endAtPC = i + extraData[1]
 						line ..= string.format("for %s = %s, %s, %s do --[[ Ends at %s ]]", 
@@ -2346,10 +2329,33 @@ local function Decompile(bytecode)
 						indentLevel = indentLevel - 1
 						indent = getIndent(indentLevel)
 						line = indent .. "end " .. string.format("--[[ Loops to %s ]]", jumpTargets[loopToPC] or loopToPC)
+
+					-- FASTCALL
+					elseif opCodeName == "FASTCALL" then
+						local bfid = extraData[1]
+						line ..= string.format("--[[ FASTCALL; %s() ]]", Luau:GetBuiltinInfo(bfid))
+					elseif opCodeName == "FASTCALL1" then
+						local bfid = extraData[1]
+						line ..= string.format("--[[ FASTCALL1; %s(%s) ]]", Luau:GetBuiltinInfo(bfid), R(usedRegisters[1], false))
+					elseif opCodeName == "FASTCALL2" then
+						local bfid = extraData[1]
+						line ..= string.format("--[[ FASTCALL2; %s(%s, %s) ]]", Luau:GetBuiltinInfo(bfid), R(usedRegisters[1], false), R(usedRegisters[2], false))
+					elseif opCodeName == "FASTCALL2K" then
+						local bfid = extraData[1]
+						local value = formatConstant(constants[extraData[3] + 1])
+						line ..= string.format("--[[ FASTCALL2K; %s(%s, %s) ]]", Luau:GetBuiltinInfo(bfid), R(usedRegisters[1], false), value)
+					elseif opCodeName == "FASTCALL3" then
+						local bfid = extraData[1]
+						line ..= string.format("--[[ FASTCALL3; %s(%s, %s, %s) ]]", Luau:GetBuiltinInfo(bfid), R(usedRegisters[1], false), R(usedRegisters[2], false), R(usedRegisters[3], false))
+					
+					-- other trivial opcodes
+					elseif opCodeName == "COVERAGE" then
+						line ..= string.format("--[[ coverage (%d) ]]", extraData[1])
 					else
 						line ..= string.format("--[[ UNHANDLED: %s ]]", opCodeName)
 					end
 					
+					-- don't add empty lines from NAMECALL
 					if line ~= "" then
 						protoStr ..= line .. "\n"
 					end
@@ -2358,13 +2364,13 @@ local function Decompile(bytecode)
 				return protoStr
 			end
 			
-			result ..= "\n\n"
+			result ..= "\n"
 			
 			result ..= decompileProto(mainProtoId, 0)
 			
 			finalResult = processResult(result)
 		end
-		
+
 		return finalResult
 	end
 
