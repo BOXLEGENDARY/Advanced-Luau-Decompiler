@@ -8,7 +8,7 @@ local ENABLED_REMARKS = {
 ------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 local DECOMPILER_TIMEOUT = 2 -- seconds
 local READER_FLOAT_PRECISION = 7 -- up to 99
-local DECOMPILER_MODE = "disasm" -- disasm/optdec
+local DECOMPILER_MODE = "optdec" -- disasm/optdec
 local SHOW_DEBUG_INFORMATION = true -- show trivial function and array allocation details
 local SHOW_INSTRUCTION_LINES = true -- show lines as they are in the source code
 local SHOW_OPERATION_NAMES = true
@@ -228,7 +228,7 @@ local function Decompile(bytecode)
 										type = localType,
 										register = localRegister,
 										startPC = localStartPC,
-										--endPC = localEndPC -- unused in the disassembler
+										endPC = localEndPC -- unused in the disassembler
 									}
 									typedLocals[i] = info
 								end
@@ -417,8 +417,8 @@ local function Decompile(bytecode)
 
 						for i = 1, totalDebugLocals do
 							local localName = stringTable[reader:nextVarInt()]
-							local localStartPC = reader:nextVarInt()
-							local localEndPC = reader:nextVarInt()
+							local localStartPC = reader:nextVarInt() + 1 -- PC is 1-based in our actions
+							local localEndPC = reader:nextVarInt() + localStartPC - 1 -- Make it 1-based
 							local localRegister = reader:nextByte()
 
 							-- debug info on the local at index `i`
@@ -1826,17 +1826,536 @@ local function Decompile(bytecode)
 			writeActions(registerActions[mainProtoId])
 
 			finalResult = processResult(result)
-		else -- assume optdec - optimized decompiler
+		else -- optdec
 			local result = ""
-			-- remove temporary registers and some optimization passes
-			local function optimize(code)
-				result = code
+			local indentationCache = {}
+	
+			local function getIndent(level)
+				if not indentationCache[level] then
+					indentationCache[level] = string.rep("\t", level)
+				end
+				return indentationCache[level]
 			end
-			optimize("-- one day..")
-
+	
+			-- Helper to format constants
+			local function formatConstant(k)
+				if not k then return "nil --[[ ERROR: Missing Constant ]]" end
+				
+				if k.type == LuauBytecodeTag.LBC_CONSTANT_VECTOR then
+					return k.value
+				elseif type(k.value) == "string" then
+					return toEscapedString(k.value)
+				elseif type(k.value) == "number" then
+					return tonumber(string.format(`%0.{READER_FLOAT_PRECISION}f`, k.value))
+				else
+					return tostring(k.value)
+				end
+			end
+			
+			local function decompileProto(protoId, indentLevel)
+				local protoActions = registerActions[protoId]
+				if not protoActions then return "--[[ ERROR: Proto not found ]]\n" end
+				
+				local proto = protoActions.proto
+				local actions = protoActions.actions
+				local constants = proto.constants
+				local innerProtos = proto.innerProtos
+				
+				local indent = getIndent(indentLevel)
+				local protoStr = ""
+				
+				-- State tracking
+				local locals = {} -- Track declared locals by name
+	
+				-- step1 :PRE-ANALYSIS (Build Debug Maps & Jump Labels)
+				local localNameMap = {} -- [register] -> list of {name, start, stop}
+				local upvalueNameMap = {} -- [index] -> name
+				local jumpTargets = {} -- [pc] -> label_name
+				local labelCounter = 1
+	
+				if proto.hasDebugInfo then
+					-- Build local variable name map
+					if proto.debugLocals then
+						for _, loc in ipairs(proto.debugLocals) do
+							if not localNameMap[loc.register] then
+								localNameMap[loc.register] = {}
+							end
+							table.insert(localNameMap[loc.register], {
+								name = loc.name,
+								start = loc.startPC,
+								stop = loc.endPC
+							})
+						end
+					end
+					-- Build upvalue name map
+					if proto.debugUpvalues then
+						for i, upv in ipairs(proto.debugUpvalues) do
+							upvalueNameMap[i - 1] = upv.name -- Upvalues are 0-indexed in captures
+						end
+					end
+				end
+				
+				-- Pre-pass to find all jump targets and create labels
+				for i, action in actions do
+					if action.hide then continue end
+					
+					local op = action.opCode.name
+					local extra = action.extraData or {}
+					local targetPC = nil
+					
+					if op == "JUMP" or op == "JUMPBACK" or op == "JUMPX" then
+						targetPC = i + extra[1]
+					elseif string.sub(op, 1, 7) == "JUMPIF" then
+						targetPC = i + extra[1]
+					elseif string.sub(op, 1, 7) == "JUMPXEQ" then
+						targetPC = i + extra[1]
+					elseif op == "FORNPREP" then
+						targetPC = i + extra[1] -- Target is the *end* of the loop
+					elseif op == "FORNLOOP" then
+						targetPC = i + extra[1] -- Target is the *start* of the loop
+					elseif op == "FORGPREP" or op == "FORGPREP_NEXT" or op == "FORGPREP_INEXT" then
+						targetPC = i + extra[1] + 2 -- Target is after the FORGLOOP
+					elseif op == "FORGLOOP" then
+						targetPC = i + extra[1] -- Target is the *start* of the loop (prep)
+					end
+					
+					if targetPC and targetPC > 0 and targetPC <= #actions and not jumpTargets[targetPC] then
+						jumpTargets[targetPC] = string.format("label_%d", labelCounter)
+						labelCounter = labelCounter + 1
+					end
+				end
+	
+				-- Register Naming Helper (Uses Debug Info)
+				local function formatReg(reg, isAssignment, currentPC)
+					-- Try finding a debug name first
+					if localNameMap[reg] then
+						for _, nameInfo in ipairs(localNameMap[reg]) do
+							if currentPC >= nameInfo.start and currentPC <= nameInfo.stop then
+								local varName = nameInfo.name
+								if isAssignment and not locals[varName] then
+									locals[varName] = true
+									return "local " .. varName
+								end
+								return varName
+							end
+						end
+					end
+					
+					if reg < proto.numParams then
+						local varName = string.format("param_%d", reg + 1)
+						if not locals[varName] then locals[varName] = true end
+						return varName
+					end
+					
+					local varName = string.format("var_%d", reg - proto.numParams + 1)
+					if isAssignment and not locals[varName] then
+						locals[varName] = true
+						return "local " .. varName
+					end
+					
+					return varName
+				end
+				
+				-- Upvalue Naming (Uses Debug Info)
+				local function formatUpval(upvalIdx)
+					if upvalueNameMap[upvalIdx] then
+						return upvalueNameMap[upvalIdx]
+					end
+					return string.format("upvalue_%d", upvalIdx + 1) 
+				end
+	
+				-- step 2: MAIN INSTRUCTION LOOP
+				local namecallCache = nil
+				for i, action in actions do
+					if action.hide then continue end
+					
+					-- Check if this instruction is a jump target
+					if jumpTargets[i] then
+						protoStr ..= indent .. "::" .. jumpTargets[i] .. "::\n"
+					end
+					
+					local opCodeName = action.opCode.name
+					local usedRegisters = action.usedRegisters or {}
+					local extraData = action.extraData or {}
+					local line = indent
+					
+					-- Helper to format registers for *this* instruction
+					local function R(reg, isAssignment)
+						return formatReg(reg, isAssignment, i)
+					end
+					
+					if opCodeName == "LOADNIL" then
+						line ..= R(usedRegisters[1], true) .. " = nil"
+					elseif opCodeName == "LOADB" then
+						line ..= R(usedRegisters[1], true) .. " = " .. tostring(toBoolean(extraData[1]))
+						if extraData[2] ~= 0 then
+							-- This is a conditional load, part of `a = b and c` or `a = b or c`
+							-- The jump target is the *next* instruction if false
+							local jumpTo = i + extraData[2]
+							line ..= string.format(" --[[ Conditional load: Jumps to %s if %s ]]", jumpTargets[jumpTo] or jumpTo, tostring(not toBoolean(extraData[1])))
+						end
+					elseif opCodeName == "LOADN" then
+						line ..= R(usedRegisters[1], true) .. " = " .. extraData[1]
+					elseif opCodeName == "LOADK" or opCodeName == "LOADKX" then
+						local const = constants[extraData[1] + 1]
+						line ..= R(usedRegisters[1], true) .. " = " .. formatConstant(const)
+					elseif opCodeName == "MOVE" then
+						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false)
+						
+					-- Globals & Imports
+					elseif opCodeName == "GETGLOBAL" then
+						local globalKey = tostring(constants[extraData[1] + 1].value)
+						if LIST_USED_GLOBALS and isValidGlobal(globalKey) then table.insert(usedGlobals, globalKey) end
+						line ..= R(usedRegisters[1], true) .. " = " .. globalKey
+					elseif opCodeName == "SETGLOBAL" then
+						local globalKey = tostring(constants[extraData[1] + 1].value)
+						if LIST_USED_GLOBALS and isValidGlobal(globalKey) then table.insert(usedGlobals, globalKey) end
+						line ..= globalKey .. " = " .. R(usedRegisters[1], false)
+					elseif opCodeName == "GETIMPORT" then
+						local import = tostring(constants[extraData[1] + 1].value)
+						line ..= R(usedRegisters[1], true) .. " = " .. import
+						
+					-- Upvalues
+					elseif opCodeName == "GETUPVAL" then
+						line ..= R(usedRegisters[1], true) .. " = " .. formatUpval(extraData[1])
+					elseif opCodeName == "SETUPVAL" then
+						line ..= formatUpval(extraData[1]) .. " = " .. R(usedRegisters[1], false)
+	
+					-- Tables
+					elseif opCodeName == "NEWTABLE" then
+						line ..= R(usedRegisters[1], true) .. " = {}"
+					elseif opCodeName == "GETTABLE" then
+						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. "[" .. R(usedRegisters[3], false) .. "]"
+					elseif opCodeName == "SETTABLE" then
+						line ..= R(usedRegisters[2], false) .. "[" .. R(usedRegisters[3], false) .. "] = " .. R(usedRegisters[1], false)
+					elseif opCodeName == "GETTABLEKS" then
+						local key = constants[extraData[2] + 1].value
+						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. formatIndexString(key)
+					elseif opCodeName == "SETTABLEKS" then
+						local key = constants[extraData[2] + 1].value
+						line ..= R(usedRegisters[2], false) .. formatIndexString(key) .. " = " .. R(usedRegisters[1], false)
+					elseif opCodeName == "GETTABLEN" then
+						local index = extraData[1] + 1
+						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. "[" .. index .. "]"
+					elseif opCodeName == "SETTABLEN" then
+						local index = extraData[1] + 1
+						line ..= R(usedRegisters[2], false) .. "[" .. index .. "] = " .. R(usedRegisters[1], false)
+						
+					-- Arithmetics
+					elseif opCodeName == "ADD" then
+						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " + " .. R(usedRegisters[3], false)
+					elseif opCodeName == "SUB" then
+						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " - " .. R(usedRegisters[3], false)
+					elseif opCodeName == "MUL" then
+						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " * " .. R(usedRegisters[3], false)
+					elseif opCodeName == "DIV" then
+						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " / " .. R(usedRegisters[3], false)
+					elseif opCodeName == "MOD" then
+						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " % " .. R(usedRegisters[3], false)
+					elseif opCodeName == "POW" then
+						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " ^ " .. R(usedRegisters[3], false)
+					elseif opCodeName == "IDIV" then
+						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " // " .. R(usedRegisters[3], false)
+						
+					-- Arithmetic with Constants
+					elseif opCodeName == "ADDK" then
+						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " + " .. formatConstant(constants[extraData[1] + 1])
+					elseif opCodeName == "SUBK" then
+						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " - " .. formatConstant(constants[extraData[1] + 1])
+					elseif opCodeName == "SUBRK" then
+						line ..= R(usedRegisters[1], true) .. " = " .. formatConstant(constants[extraData[1] + 1]) .. " - " .. R(usedRegisters[2], false)
+					elseif opCodeName == "MULK" then
+						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " * " .. formatConstant(constants[extraData[1] + 1])
+					elseif opCodeName == "DIVK" then
+						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " / " .. formatConstant(constants[extraData[1] + 1])
+					elseif opCodeName == "DIVRK" then
+						line ..= R(usedRegisters[1], true) .. " = " .. formatConstant(constants[extraData[1] + 1]) .. " / " .. R(usedRegisters[2], false)
+					elseif opCodeName == "MODK" then
+						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " % " .. formatConstant(constants[extraData[1] + 1])
+					elseif opCodeName == "POWK" then
+						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " ^ " .. formatConstant(constants[extraData[1] + 1])
+					elseif opCodeName == "IDIVK" then
+						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " // " .. formatConstant(constants[extraData[1] + 1])
+						
+					-- Logic
+					elseif opCodeName == "NOT" then
+						line ..= R(usedRegisters[1], true) .. " = not " .. R(usedRegisters[2], false)
+					elseif opCodeName == "MINUS" then
+						line ..= R(usedRegisters[1], true) .. " = -" .. R(usedRegisters[2], false)
+					elseif opCodeName == "LENGTH" then
+						line ..= R(usedRegisters[1], true) .. " = #" .. R(usedRegisters[2], false)
+					
+					-- Logical Ops (Part of `and`/`or` chains, handled by LOADB jumps)
+					elseif opCodeName == "AND" then
+						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " and " .. R(usedRegisters[3], false)
+					elseif opCodeName == "OR" then
+						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " or " .. R(usedRegisters[3], false)
+					elseif opCodeName == "ANDK" then
+						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " and " .. formatConstant(constants[extraData[1] + 1])
+					elseif opCodeName == "ORK" then
+						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " or " .. formatConstant(constants[extraData[1] + 1])
+					
+					-- String Concat
+					elseif opCodeName == "CONCAT" then
+						local parts = {}
+						for reg = usedRegisters[2], usedRegisters[3] do
+							table.insert(parts, R(reg, false))
+						end
+						line ..= R(usedRegisters[1], true) .. " = " .. table.concat(parts, " .. ")
+						
+					-- Functions & Calls (Smarter Naming)
+					elseif opCodeName == "NEWCLOSURE" or opCodeName == "DUPCLOSURE" then
+						local targetReg = usedRegisters[1]
+						local nextProto
+						
+						if opCodeName == "NEWCLOSURE" then
+							nextProto = innerProtos[extraData[1] + 1]
+						else
+							nextProto = protoTable[constants[extraData[1] + 1].value - 1]
+						end
+						
+						-- Generate function parameters
+						local params = {}
+						if nextProto.hasDebugInfo and nextProto.debugLocals then
+							local paramMap = {}
+							for p = 0, nextProto.numParams - 1 do
+								for _, loc in ipairs(nextProto.debugLocals) do
+									if loc.register == p and loc.startPC == 1 then -- Params are registers 0..N at PC 1
+										paramMap[p] = loc.name
+										break
+									end
+								end
+							end
+							for p = 0, nextProto.numParams - 1 do
+								table.insert(params, paramMap[p] or string.format("param_%d", p + 1))
+							end
+						else
+							-- Fallback to old param naming
+							for p = 0, nextProto.numParams - 1 do
+								table.insert(params, string.format("param_%d", p + 1))
+							end
+						end
+						
+						if nextProto.isVarArg then table.insert(params, "...") end
+						
+						-- Check for named function
+						if nextProto.name then
+							line = indent .. "local function " .. nextProto.name .. "(" .. table.concat(params, ", ") .. ")\n"
+							line ..= decompileProto(nextProto.id, indentLevel + 1) -- RECURSION
+							line ..= indent .. "end\n"
+							line ..= indent .. R(targetReg, true) .. " = " .. nextProto.name
+						else
+							line ..= R(targetReg, true) .. " = function(" .. table.concat(params, ", ") .. ")\n"
+							line ..= decompileProto(nextProto.id, indentLevel + 1) -- RECURSION
+							line ..= indent .. "end"
+						end
+						
+					elseif opCodeName == "NAMECALL" then
+						local method = tostring(constants[extraData[2] + 1].value)
+						namecallCache = {
+							BaseReg = usedRegisters[1],
+							TableReg = usedRegisters[2],
+							Method = method
+						}
+						line = "" -- Don't output anything yet
+						
+					elseif opCodeName == "CALL" then
+						local baseReg = usedRegisters[1]
+						local numArgs = extraData[1] - 1
+						local numResults = extraData[2] - 1
+						
+						local args = {}
+						local funcCallStr = ""
+						
+						if namecallCache and namecallCache.BaseReg == baseReg then
+							funcCallStr = R(namecallCache.TableReg, false) .. ":" .. namecallCache.Method
+							-- NAMECALL passes self, so we skip reg 0 (which is table) and start from 1
+							for a = 1, numArgs do 
+								table.insert(args, R(baseReg + a, false))
+							end
+							namecallCache = nil
+						else
+							funcCallStr = R(baseReg, false)
+							for a = 1, numArgs do
+								table.insert(args, R(baseReg + a, false))
+							end
+						end
+						
+						if numArgs == -1 then table.insert(args, "...") end
+						
+						local results = {}
+						if numResults == -1 then
+							table.insert(results, "...")
+						else
+							for r = 0, numResults - 1 do
+								table.insert(results, R(baseReg + r, true))
+							end
+						end
+						
+						local resultsStr = table.concat(results, ", ")
+						if resultsStr ~= "" and resultsStr ~= "..." then
+							line ..= resultsStr .. " = "
+						elseif resultsStr == "..." then
+							line ..= "... = " -- Handle `... = func(...)`
+						end
+						
+						line ..= funcCallStr .. "(" .. table.concat(args, ", ") .. ")"
+						
+					elseif opCodeName == "RETURN" then
+						line ..= "return "
+						local baseReg = usedRegisters[1]
+						local totalValues = extraData[1] - 2
+						
+						if totalValues == -2 then
+							line ..= R(baseReg, false) .. ", ..."
+						elseif totalValues > -1 then
+							local rets = {}
+							for r = 0, totalValues do
+								table.insert(rets, R(baseReg + r, false))
+							end
+							line ..= table.concat(rets, ", ")
+						end
+						
+					-- Varargs
+					elseif opCodeName == "GETVARARGS" then
+						local variableCount = extraData[1] - 1
+						local results = {}
+						for v = 1, variableCount do
+							table.insert(results, R(usedRegisters[v], true))
+						end
+						line ..= table.concat(results, ", ") .. " = ..."
+					
+					-- CONTROL FLOW (GOTO)
+					elseif opCodeName == "JUMP" or opCodeName == "JUMPBACK" or opCodeName == "JUMPX" then
+						local target = i + extraData[1]
+						line ..= "goto " .. (jumpTargets[target] or string.format("--[[ INVALID_GOTO_TARGET: %d ]]", target))
+					
+					-- Conditional Jumps
+					elseif opCodeName == "JUMPIF" then -- if NOT ... then jump
+						local target = i + extraData[1]
+						line ..= string.format("if not %s then goto %s end", R(usedRegisters[1], false), jumpTargets[target] or target)
+					elseif opCodeName == "JUMPIFNOT" then -- if ... then jump
+						local target = i + extraData[1]
+						line ..= string.format("if %s then goto %s end", R(usedRegisters[1], false), jumpTargets[target] or target)
+					elseif opCodeName == "JUMPIFEQ" then
+						local target = i + extraData[1]
+						line ..= string.format("if %s == %s then goto %s end", R(usedRegisters[1], false), R(usedRegisters[2], false), jumpTargets[target] or target)
+					elseif opCodeName == "JUMPIFLE" then
+						local target = i + extraData[1]
+						line ..= string.format("if %s <= %s then goto %s end", R(usedRegisters[1], false), R(usedRegisters[2], false), jumpTargets[target] or target)
+					elseif opCodeName == "JUMPIFLT" then
+						local target = i + extraData[1]
+						line ..= string.format("if %s < %s then goto %s end", R(usedRegisters[1], false), R(usedRegisters[2], false), jumpTargets[target] or target)
+					elseif opCodeName == "JUMPIFNOTEQ" then
+						local target = i + extraData[1]
+						line ..= string.format("if %s ~= %s then goto %s end", R(usedRegisters[1], false), R(usedRegisters[2], false), jumpTargets[target] or target)
+					elseif opCodeName == "JUMPIFNOTLE" then
+						local target = i + extraData[1]
+						line ..= string.format("if %s > %s then goto %s end", R(usedRegisters[1], false), R(usedRegisters[2], false), jumpTargets[target] or target)
+					elseif opCodeName == "JUMPIFNOTLT" then
+						local target = i + extraData[1]
+						line ..= string.format("if %s >= %s then goto %s end", R(usedRegisters[1], false), R(usedRegisters[2], false), jumpTargets[target] or target)
+					
+					-- Conditional Jumps with Constants
+					elseif opCodeName == "JUMPXEQKNIL" then
+						local target = i + extraData[1]
+						local sign = (bit32.rshift(extraData[2], 0x1F) ~= 1) and "~=" or "=="
+						line ..= string.format("if %s %s nil then goto %s end", R(usedRegisters[1], false), sign, jumpTargets[target] or target)
+					elseif opCodeName == "JUMPXEQKB" then
+						local target = i + extraData[1]
+						local val = tostring(toBoolean(bit32.band(extraData[2], 1)))
+						local sign = (bit32.rshift(extraData[2], 0x1F) ~= 1) and "~=" or "=="
+						line ..= string.format("if %s %s %s then goto %s end", R(usedRegisters[1], false), sign, val, jumpTargets[target] or target)
+					elseif opCodeName == "JUMPXEQKN" or opCodeName == "JUMPXEQKS" then
+						local target = i + extraData[1]
+						local const = constants[bit32.band(extraData[2], 0xFFFFFF) + 1]
+						local sign = (bit32.rshift(extraData[2], 0x1F) ~= 1) and "~=" or "=="
+						line ..= string.format("if %s %s %s then goto %s end", R(usedRegisters[1], false), sign, formatConstant(const), jumpTargets[target] or target)
+						
+					-- LOOPS (Indentation Handled)
+					elseif opCodeName == "FORNPREP" then
+						local endAtPC = i + extraData[1]
+						line ..= string.format("for %s = %s, %s, %s do --[[ Ends at %s ]]", 
+							R(usedRegisters[3], true), -- index
+							R(usedRegisters[3], false), -- start (already in index reg)
+							R(usedRegisters[1], false), -- limit
+							R(usedRegisters[2], false), -- step
+							jumpTargets[endAtPC] or endAtPC)
+						indentLevel = indentLevel + 1
+						indent = getIndent(indentLevel)
+					elseif opCodeName == "FORNLOOP" then
+						local loopToPC = i + extraData[1]
+						indentLevel = indentLevel - 1
+						indent = getIndent(indentLevel)
+						line = indent .. "end " .. string.format("--[[ Loops to %s ]]", jumpTargets[loopToPC] or loopToPC)
+						
+					elseif opCodeName == "FORGPREP_NEXT" then
+						local endAtPC = i + extraData[1] + 2
+						line ..= string.format("for %s, %s in pairs(%s) do --[[ Ends at %s ]]",
+							R(usedRegisters[1] + 2, true), -- k
+							R(usedRegisters[1] + 3, true), -- v
+							R(usedRegisters[1], false), -- tbl
+							jumpTargets[endAtPC] or endAtPC)
+						indentLevel = indentLevel + 1
+						indent = getIndent(indentLevel)
+					elseif opCodeName == "FORGPREP_INEXT" then
+						local endAtPC = i + extraData[1] + 2
+						line ..= string.format("for %s, %s in ipairs(%s) do --[[ Ends at %s ]]",
+							R(usedRegisters[1] + 2, true), -- k
+							R(usedRegisters[1] + 3, true), -- v
+							R(usedRegisters[1], false), -- tbl
+							jumpTargets[endAtPC] or endAtPC)
+						indentLevel = indentLevel + 1
+						indent = getIndent(indentLevel)
+					elseif opCodeName == "FORGPREP" then
+						local endAtPC = i + extraData[1] + 2
+						local endAction = actions[i + extraData[1] + 1] -- This is FORGLOOP
+						local vars = {}
+						if endAction and endAction.usedRegisters then
+							for _, reg in ipairs(endAction.usedRegisters) do
+								table.insert(vars, R(reg, true))
+							end
+						else
+							table.insert(vars, "var_k, var_v --[[ ERROR ]]")
+						end
+						
+						line ..= string.format("for %s in %s do --[[ Ends at %s ]]",
+							table.concat(vars, ", "),
+							R(usedRegisters[1], false),
+							jumpTargets[endAtPC] or endAtPC)
+						indentLevel = indentLevel + 1
+						indent = getIndent(indentLevel)
+						
+					elseif opCodeName == "FORGLOOP" then
+						local loopToPC = i + extraData[1]
+						indentLevel = indentLevel - 1
+						indent = getIndent(indentLevel)
+						line = indent .. "end " .. string.format("--[[ Loops to %s ]]", jumpTargets[loopToPC] or loopToPC)
+	
+					-- Fallback for unhandled opcodes
+					else
+						line ..= string.format("--[[ UNHANDLED: %s ]]", opCodeName)
+					end
+					
+					-- Don't add empty lines from NAMECALL
+					if line ~= "" then
+						protoStr ..= line .. "\n"
+					end
+				end
+				
+				return protoStr
+			end
+			
+			-- Main entry point for optdec
+			result = "--[[ DECOMPILATION WARNING ]]\n"
+			result ..= "--[[ This output is for analysis and is much clearer than raw disassembly. ]]\n\n"
+			
+			-- Start decompilation from the main proto
+			result ..= decompileProto(mainProtoId, 0)
+			
 			finalResult = processResult(result)
 		end
-
+		
 		return finalResult
 	end
 
