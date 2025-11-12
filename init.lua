@@ -1864,7 +1864,7 @@ local function Decompile(bytecode)
 				local indent = getIndent(indentLevel)
 				local protoStr = ""
 				
-				local locals = {} -- Track declared locals by name
+				local locals = {}
 	
 				local localNameMap = {} -- [register] -> list of {name, start, stop}
 				local upvalueNameMap = {} -- [index] -> name
