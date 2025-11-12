@@ -1828,14 +1828,14 @@ local function Decompile(bytecode)
 			finalResult = processResult(result)
 		do -- optdec
 		    local result = ""
-		    local indentationCache = {}
+		    local indentation = {}
 		
 		    local function getIndent(level)
 		        level = level or 0
-		        if not indentationCache[level] then
-		            indentationCache[level] = string.rep("\t", level)
+		        if not indentation[level] then
+		            indentation[level] = string.rep("\t", level)
 		        end
-		        return indentationCache[level]
+		        return indentation[level]
 		    end
 		
 		    -- helper to format constants
@@ -1859,10 +1859,10 @@ local function Decompile(bytecode)
 		        local protoActions = registerActions and registerActions[protoId]
 		        if not protoActions then return "--[[ ERROR: Proto not found ]]\n" end
 		
-		        local proto = protoActions.proto
-		        local actions = protoActions.actions or {}
-		        local constants = proto.constants or {}
-		        local innerProtos = proto.innerProtos or {}
+				local proto = protoActions.proto
+				local actions = protoActions.actions
+				local constants = proto.constants
+				local innerProtos = proto.innerProtos
 		
 		        local indent = getIndent(indentLevel)
 		        local protoStr = ""
