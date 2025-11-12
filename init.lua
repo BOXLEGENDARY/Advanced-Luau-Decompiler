@@ -1873,7 +1873,7 @@ local function Decompile(bytecode)
 				-- State tracking
 				local locals = {} -- Track declared locals by name
 
-				-- [UPGRADE 1] Build Debug Name Maps
+				-- Build Debug Name Maps
 				local localNameMap = {} -- [register] -> list of {name, start, stop}
 				local upvalueNameMap = {} -- [index] -> name
 				
@@ -1899,7 +1899,7 @@ local function Decompile(bytecode)
 					end
 				end
 
-				-- [UPGRADE 1] Register Naming Helper (Now uses Debug Info)
+				-- Register Naming Helper (Now uses Debug Info)
 				local function formatReg(reg, isAssignment, currentPC)
 					-- Try finding a debug name first
 					if localNameMap[reg] then
@@ -1924,7 +1924,7 @@ local function Decompile(bytecode)
 						return varName
 					end
 					
-					local varName = string.format("local_%d", reg - proto.numParams + 1)
+					local varName = string.format("v%d", reg - proto.numParams + 1)
 					if isAssignment and not locals[varName] then
 						locals[varName] = true
 						return "local " .. varName -- local
@@ -1933,7 +1933,7 @@ local function Decompile(bytecode)
 					return varName
 				end
 				
-				-- [UPGRADE 2] Upvalue Naming (Now uses Debug Info)
+				-- Upvalue Naming (Now uses Debug Info)
 				local function formatUpval(upvalIdx)
 					if upvalueNameMap[upvalIdx] then
 						return upvalueNameMap[upvalIdx]
@@ -2072,7 +2072,7 @@ local function Decompile(bytecode)
 						end
 						line ..= R(usedRegisters[1], true) .. " = " .. table.concat(parts, " .. ")
 						
-					-- [UPGRADE 3] Functions & Calls (Smarter Naming)
+					-- Functions & Calls (Smarter Naming)
 					elseif opCodeName == "NEWCLOSURE" or opCodeName == "DUPCLOSURE" then
 						local targetReg = usedRegisters[1]
 						local nextProto
