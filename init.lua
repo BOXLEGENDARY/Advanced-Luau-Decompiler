@@ -1837,7 +1837,7 @@ local function Decompile(bytecode)
 				return indentationCache[level]
 			end
 	
-			-- helper to format constants
+			-- Helper to format constants
 			local function formatConstant(k)
 				if not k then return "nil --[[ ERROR: Missing Constant ]]" end
 				
@@ -2156,41 +2156,29 @@ local function Decompile(bytecode)
 						}
 						line = "" -- don't output anything yet
 						
-					-- ::: MODIFIED BLOCK HERE :::
 					elseif opCodeName == "CALL" then
-						local baseReg = usedRegisters[1] -- A
-						local numArgs = extraData[1] - 1 -- B-1
-						local numResults = extraData[2] - 1 -- C-1
+						local baseReg = usedRegisters[1]
+						local numArgs = extraData[1] - 1
+						local numResults = extraData[2] - 1
 						
 						local args = {}
 						local funcCallStr = ""
-						local argOffset = 0
 						
 						if namecallCache and namecallCache.BaseReg == baseReg then
-							-- BUGFIX: Use R(A) as the object, not R(B).
-							-- NAMECALL moves R(B) into R(A) to act as 'self'.
-							funcCallStr = R(baseReg, false) .. ":" .. namecallCache.Method
-							
-							-- Replicate disasm logic EXACTLY:
-							-- numArgs includes 'self', so subtract 1
-							-- argOffset starts at 1 (to skip 'self' which is R(A))
-							numArgs = numArgs - 1
-							argOffset = 1
-							
+							funcCallStr = R(namecallCache.TableReg, false) .. ":" .. namecallCache.Method
+							-- NAMECALL passes self, so we skip reg 0 (which is table) and start from 1
+							for a = 1, numArgs do 
+								table.insert(args, R(baseReg + a, false))
+							end
 							namecallCache = nil
 						else
 							funcCallStr = R(baseReg, false)
-							-- argOffset remains 0
-						end
-						
-						if numArgs == -1 then 
-							table.insert(args, "...")
-						elseif numArgs > 0 then
-							-- BUGFIX: Arguments are R(A + i + offset)
 							for a = 1, numArgs do
-								table.insert(args, R(baseReg + a + argOffset, false))
+								table.insert(args, R(baseReg + a, false))
 							end
 						end
+						
+						if numArgs == -1 then table.insert(args, "...") end
 						
 						local results = {}
 						if numResults == -1 then
@@ -2209,7 +2197,6 @@ local function Decompile(bytecode)
 						end
 						
 						line ..= funcCallStr .. "(" .. table.concat(args, ", ") .. ")"
-					-- ::: END OF MODIFIED BLOCK :::
 						
 					elseif opCodeName == "RETURN" then
 						line ..= "return "
