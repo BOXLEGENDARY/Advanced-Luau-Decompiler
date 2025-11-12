@@ -1826,155 +1826,160 @@ local function Decompile(bytecode)
 			writeActions(registerActions[mainProtoId])
 
 			finalResult = processResult(result)
-		else -- optdec
-			local result = ""
-			local indentationCache = {}
-	
-			local function getIndent(level)
-				if not indentationCache[level] then
-					indentationCache[level] = string.rep("\t", level)
-				end
-				return indentationCache[level]
-			end
-	
-			-- Helper to format constants
-			local function formatConstant(k)
-				if not k then return "nil --[[ ERROR: Missing Constant ]]" end
-				
-				if k.type == LuauBytecodeTag.LBC_CONSTANT_VECTOR then
-					return k.value
-				elseif type(k.value) == "string" then
-					return toEscapedString(k.value)
-				elseif type(k.value) == "number" then
-					return tonumber(string.format(`%0.{READER_FLOAT_PRECISION}f`, k.value))
-				else
-					return tostring(k.value)
-				end
-			end
-			
-			local function decompileProto(protoId, indentLevel)
-				local protoActions = registerActions[protoId]
-				if not protoActions then return "--[[ ERROR: Proto not found ]]\n" end
-				
-				local proto = protoActions.proto
-				local actions = protoActions.actions
-				local constants = proto.constants
-				local innerProtos = proto.innerProtos
-				
-				local indent = getIndent(indentLevel)
-				local protoStr = ""
-				
-				local locals = {}
-	
-				local localNameMap = {} -- [register] -> list of {name, start, stop}
-				local upvalueNameMap = {} -- [index] -> name
-				local jumpTargets = {} -- [pc] -> label_name
-				local labelCounter = 1
-	
-				if proto.hasDebugInfo then
-					if proto.debugLocals then
-						for _, loc in ipairs(proto.debugLocals) do
-							if not localNameMap[loc.register] then
-								localNameMap[loc.register] = {}
-							end
-							table.insert(localNameMap[loc.register], {
-								name = loc.name,
-								start = loc.startPC,
-								stop = loc.stopPC
-							})
-						end
-					end
-					if proto.debugUpvalues then
-						for i, upv in ipairs(proto.debugUpvalues) do
-							upvalueNameMap[i - 1] = upv.name -- upvalues are 0-indexed in captures
-						end
-					end
-				end
-				
-				for i, action in actions do
-					if action.hide then continue end
-					
-					local op = action.opCode.name
-					local extra = action.extraData or {}
-					local targetPC = nil
-					
-					if op == "JUMP" or op == "JUMPBACK" or op == "JUMPX" then
-						targetPC = i + extra[1]
-					elseif string.sub(op, 1, 7) == "JUMPIF" then
-						targetPC = i + extra[1]
-					elseif string.sub(op, 1, 7) == "JUMPXEQ" then
-						targetPC = i + extra[1]
-					elseif op == "FORNPREP" then
-						targetPC = i + extra[1] -- target is the *end* of the loop
-					elseif op == "FORNLOOP" then
-						targetPC = i + extra[1] -- target is the *start* of the loop
-					elseif op == "FORGPREP" or op == "FORGPREP_NEXT" or op == "FORGPREP_INEXT" then
-						targetPC = i + extra[1] + 2 -- target is after the FORGLOOP
-					elseif op == "FORGLOOP" then
-						targetPC = i + extra[1] -- target is the *start* of the loop (prep)
-					elseif op == "LOADB" and (extra[2] or 0) ~= 0 then
-						targetPC = i + 2 
-					end
-					
-					if targetPC and targetPC > 0 and targetPC <= #actions and not jumpTargets[targetPC] then
-						jumpTargets[targetPC] = string.format("label_%d", labelCounter)
-						labelCounter = labelCounter + 1
-					end
-				end
-
-				local function formatReg(reg, isAssignment, currentPC)
-					if localNameMap[reg] then
-						for _, nameInfo in ipairs(localNameMap[reg]) do
-							if currentPC >= nameInfo.start and currentPC <= nameInfo.stop then
-								local varName = nameInfo.name
-								if isAssignment and not locals[varName] then
-									locals[varName] = true
-									return "local " .. varName
-								end
-								return varName
-							end
-						end
-					end
-					
-					if reg < proto.numParams then
-						local varName = string.format("param_%d", reg + 1)
-						if not locals[varName] then locals[varName] = true end
-						return varName
-					end
-					
-					local varName = string.format("var_%d", reg - proto.numParams + 1)
-					if isAssignment and not locals[varName] then
-						locals[varName] = true
-						return "local " .. varName
-					end
-					
-					return varName
-				end
-				
-				local function formatUpval(upvalIdx)
-					if upvalueNameMap[upvalIdx] then
-						return upvalueNameMap[upvalIdx]
-					end
-					return string.format("upvalue_%d", upvalIdx + 1) 
-				end
-	
-				local namecallCache = nil
-				for i, action in actions do
-					if action.hide then continue end
-					
-					if jumpTargets[i] then
-						protoStr ..= indent .. "::" .. jumpTargets[i] .. "::\n"
-					end
-					
-					local opCodeName = action.opCode.name
-					local usedRegisters = action.usedRegisters or {}
-					local extraData = action.extraData or {}
-					local line = indent
-					
-					-- helper to format registers for *this* instruction
-					local function R(reg, isAssignment)
-						return formatReg(reg, isAssignment, i)
-					end
+		do -- optdec
+		    local result = ""
+		    local indentationCache = {}
+		
+		    local function getIndent(level)
+		        level = level or 0
+		        if not indentationCache[level] then
+		            indentationCache[level] = string.rep("\t", level)
+		        end
+		        return indentationCache[level]
+		    end
+		
+		    -- helper to format constants
+		    local function formatConstant(k)
+		        if not k then return "nil --[[ ERROR: Missing Constant ]]" end
+		
+		        if k.type == LuauBytecodeTag.LBC_CONSTANT_VECTOR then
+		            return tostring(k.value)
+		        elseif type(k.value) == "string" then
+		            return toEscapedString(k.value)
+		        elseif type(k.value) == "number" then
+		            local prec = tonumber(READER_FLOAT_PRECISION) or 6
+		            return tostring(tonumber(string.format("%0." .. prec .. "f", k.value)))
+		        else
+		            return tostring(k.value)
+		        end
+		    end
+		
+		    local function decompileProto(protoId, indentLevel)
+		        indentLevel = indentLevel or 0
+		        local protoActions = registerActions and registerActions[protoId]
+		        if not protoActions then return "--[[ ERROR: Proto not found ]]\n" end
+		
+		        local proto = protoActions.proto
+		        local actions = protoActions.actions or {}
+		        local constants = proto.constants or {}
+		        local innerProtos = proto.innerProtos or {}
+		
+		        local indent = getIndent(indentLevel)
+		        local protoStr = ""
+		
+		        local locals = {}
+		        local localNameMap = {} -- [register] -> list of {name, start, stop}
+		        local upvalueNameMap = {} -- [index] -> name
+		        local jumpTargets = {} -- [pc] -> label_name
+		        local labelCounter = 1
+		
+		        if proto.hasDebugInfo then
+		            if proto.debugLocals then
+		                for _, loc in ipairs(proto.debugLocals) do
+		                    if not localNameMap[loc.register] then
+		                        localNameMap[loc.register] = {}
+		                    end
+		                    table.insert(localNameMap[loc.register], {
+		                        name = loc.name,
+		                        start = loc.startPC,
+		                        stop = loc.stopPC
+		                    })
+		                end
+		            end
+		            if proto.debugUpvalues then
+		                for i, upv in ipairs(proto.debugUpvalues) do
+		                    upvalueNameMap[i - 1] = upv.name
+		                end
+		            end
+		        end
+		
+		        -- first pass: compute jump targets
+		        for i, action in ipairs(actions) do
+		            if action and not action.hide then
+		                local op = action.opCode and action.opCode.name
+		                local extra = action.extraData or {}
+		                local targetPC = nil
+		
+		                if op == "JUMP" or op == "JUMPBACK" or op == "JUMPX" then
+		                    targetPC = i + (extra[1] or 0)
+		                elseif string.sub(op or "", 1, 7) == "JUMPIF" then
+		                    targetPC = i + (extra[1] or 0)
+		                elseif string.sub(op or "", 1, 7) == "JUMPXEQ" then
+		                    targetPC = i + (extra[1] or 0)
+		                elseif op == "FORNPREP" then
+		                    targetPC = i + (extra[1] or 0)
+		                elseif op == "FORNLOOP" then
+		                    targetPC = i + (extra[1] or 0)
+		                elseif op == "FORGPREP" or op == "FORGPREP_NEXT" or op == "FORGPREP_INEXT" then
+		                    targetPC = i + (extra[1] or 0) + 2
+		                elseif op == "FORGLOOP" then
+		                    targetPC = i + (extra[1] or 0)
+		                elseif op == "LOADB" and (extra[2] or 0) ~= 0 then
+		                    targetPC = i + 2
+		                end
+		
+		                if targetPC and targetPC > 0 and targetPC <= #actions and not jumpTargets[targetPC] then
+		                    jumpTargets[targetPC] = string.format("label_%d", labelCounter)
+		                    labelCounter = labelCounter + 1
+		                end
+		            end
+		        end
+		
+		        local function formatReg(reg, isAssignment, currentPC)
+		            reg = reg or 0
+		            if localNameMap[reg] then
+		                for _, nameInfo in ipairs(localNameMap[reg]) do
+		                    if currentPC >= nameInfo.start and currentPC <= nameInfo.stop then
+		                        local varName = nameInfo.name
+		                        if isAssignment and not locals[varName] then
+		                            locals[varName] = true
+		                            return "local " .. varName
+		                        end
+		                        return varName
+		                    end
+		                end
+		            end
+		
+		            local numParams = proto.numParams or 0
+		            if reg < numParams then
+		                local varName = string.format("param_%d", reg + 1)
+		                if not locals[varName] then locals[varName] = true end
+		                return varName
+		            end
+		
+		            local varName = string.format("var_%d", reg - numParams + 1)
+		            if isAssignment and not locals[varName] then
+		                locals[varName] = true
+		                return "local " .. varName
+		            end
+		
+		            return varName
+		        end
+		
+		        local function formatUpval(upvalIdx)
+		            if upvalueNameMap[upvalIdx] then
+		                return upvalueNameMap[upvalIdx]
+		            end
+		            return string.format("upvalue_%d", upvalIdx + 1)
+		        end
+		
+		        local namecallCache = nil
+		
+		        for i, action in ipairs(actions) do
+		            if not action or action.hide then goto continue end
+		
+		            if jumpTargets[i] then
+		                protoStr ..= indent .. "::" .. jumpTargets[i] .. "::\n"
+		            end
+		
+		            local opCodeName = action.opCode and action.opCode.name or "UNKNOWN"
+		            local usedRegisters = action.usedRegisters or {}
+		            local extraData = action.extraData or {}
+		            local line = indent
+		
+		            local function R(reg, isAssignment)
+		                return formatReg(reg, isAssignment, i)
+		            end
 					
 					if opCodeName == "NOP" or opCodeName == "BREAK" or opCodeName == "NATIVECALL" then
 						line ..= string.format("--[[ %s ]]", opCodeName)
@@ -2355,20 +2360,21 @@ local function Decompile(bytecode)
 						line ..= string.format("--[[ UNHANDLED: %s ]]", opCodeName)
 					end
 					
-					-- don't add empty lines from NAMECALL
-					if line ~= "" then
-						protoStr ..= line .. "\n"
-					end
-				end
-				
-				return protoStr
-			end
-			
-			result ..= "\n"
-			
-			result ..= decompileProto(mainProtoId, 0)
-			
-			finalResult = processResult(result)
+		            -- don't add empty lines from NAMECALL
+		            if line ~= "" then
+		                protoStr ..= line .. "\n"
+		            end
+		
+		            ::continue::
+		        end
+		
+		        return protoStr
+		    end
+		
+		    result ..= "\n"
+		    result ..= decompileProto(mainProtoId, 0)
+		
+		    local finalResult = processResult and processResult(result) or result
 		end
 
 		return finalResult
