@@ -1966,7 +1966,7 @@ local function Decompile(bytecode)
 		        local namecallCache = nil
 		
 		        for i, action in ipairs(actions) do
-		            if not action or action.hide then goto continue end
+		            if not action or action.hide then continue end
 		
 		            if jumpTargets[i] then
 		                protoStr ..= indent .. "::" .. jumpTargets[i] .. "::\n"
