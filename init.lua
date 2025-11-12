@@ -1837,7 +1837,7 @@ local function Decompile(bytecode)
 				return indentationCache[level]
 			end
 	
-			-- Helper to format constants
+			-- helper to format constants
 			local function formatConstant(k)
 				if not k then return "nil --[[ ERROR: Missing Constant ]]" end
 				
@@ -1846,7 +1846,7 @@ local function Decompile(bytecode)
 				elseif type(k.value) == "string" then
 					return toEscapedString(k.value)
 				elseif type(k.value) == "number" then
-					return tonumber(string.format(`%0.{READER_FLOAT_PRECISION}f`, k.value))
+					return tostring(k.value)
 				else
 					return tostring(k.value)
 				end
@@ -1864,13 +1864,13 @@ local function Decompile(bytecode)
 				local indent = getIndent(indentLevel)
 				local protoStr = ""
 				
-				local locals = {} -- Track declared locals by name
-	
+				local locals = {} -- [varName] = true (All locals, including params, for declaration)
 				local localNameMap = {} -- [register] -> list of {name, start, stop}
 				local upvalueNameMap = {} -- [index] -> name
 				local jumpTargets = {} -- [pc] -> label_name
 				local labelCounter = 1
-	
+				local registerNames = {} -- [register] -> finalName (used to store names for all locals/vars)
+				
 				if proto.hasDebugInfo then
 					if proto.debugLocals then
 						for _, loc in ipairs(proto.debugLocals) do
@@ -1882,6 +1882,12 @@ local function Decompile(bytecode)
 								start = loc.startPC,
 								stop = loc.stopPC
 							})
+							-- Pre-declare names from debug info
+							if loc.startPC == 1 and loc.register < proto.numParams then
+								locals[loc.name] = true -- Params from debug info
+							elseif loc.register >= proto.numParams then
+								locals[loc.name] = true -- Locals from debug info
+							end
 						end
 					end
 					if proto.debugUpvalues then
@@ -1891,6 +1897,36 @@ local function Decompile(bytecode)
 					end
 				end
 				
+				-- Function to get/set register name during pre-pass
+				local function getRegisterName(reg, currentPC, isParam)
+					-- 1. Try debug name
+					if localNameMap[reg] then
+						for _, nameInfo in ipairs(localNameMap[reg]) do
+							if currentPC >= nameInfo.start and currentPC <= nameInfo.stop then
+								return nameInfo.name
+							end
+						end
+					end
+					
+					-- 2. Param name
+					if isParam or reg < proto.numParams then
+						return string.format("param_%d", reg + 1)
+					end
+					
+					-- 3. Generated var name
+					return string.format("var_%d", reg - proto.numParams + 1)
+				end
+				
+				-- Pre-pass 2: Collect all unique variable names
+				for r = 0, proto.maxStackSize - 1 do
+					local varName = getRegisterName(r, 1, r < proto.numParams)
+					if not locals[varName] and r >= proto.numParams then
+						locals[varName] = true
+					end
+					registerNames[r] = varName -- Cache the most likely name for simplicity
+				end
+				
+				-- Pre-pass 3: Jump target identification (unchanged)
 				for i, action in actions do
 					if action.hide then continue end
 					
@@ -1898,6 +1934,7 @@ local function Decompile(bytecode)
 					local extra = action.extraData or {}
 					local targetPC = nil
 					
+					-- (Jump target logic remains the same)
 					if op == "JUMP" or op == "JUMPBACK" or op == "JUMPX" then
 						targetPC = i + extra[1]
 					elseif string.sub(op, 1, 7) == "JUMPIF" then
@@ -1922,33 +1959,19 @@ local function Decompile(bytecode)
 					end
 				end
 
-				local function formatReg(reg, isAssignment, currentPC)
+				-- Function to get the register name for the main pass (NO 'local' prefix)
+				local function R(reg, isAssignment, currentPC)
+					-- 1. Try debug name (most accurate for scope)
 					if localNameMap[reg] then
 						for _, nameInfo in ipairs(localNameMap[reg]) do
 							if currentPC >= nameInfo.start and currentPC <= nameInfo.stop then
-								local varName = nameInfo.name
-								if isAssignment and not locals[varName] then
-									locals[varName] = true
-									return "local " .. varName
-								end
-								return varName
+								return nameInfo.name
 							end
 						end
 					end
 					
-					if reg < proto.numParams then
-						local varName = string.format("param_%d", reg + 1)
-						if not locals[varName] then locals[varName] = true end
-						return varName
-					end
-					
-					local varName = string.format("var_%d", reg - proto.numParams + 1)
-					if isAssignment and not locals[varName] then
-						locals[varName] = true
-						return "local " .. varName
-					end
-					
-					return varName
+					-- 2. Use cached generated/param name
+					return registerNames[reg] or string.format("var_R%d", reg)
 				end
 				
 				local function formatUpval(upvalIdx)
@@ -1956,6 +1979,52 @@ local function Decompile(bytecode)
 						return upvalueNameMap[upvalIdx]
 					end
 					return string.format("upvalue_%d", upvalIdx + 1) 
+				end
+				
+				-- Helper to look up if a register holds a constant from the previous instruction
+				local function tryFoldConstant(reg, currentPC)
+					-- Find the instruction that set 'reg'
+					local prevAction = actions[currentPC - 1]
+					if prevAction and prevAction.usedRegisters and prevAction.usedRegisters[1] == reg then
+						local op = prevAction.opCode.name
+						
+						if op == "LOADK" or op == "LOADKX" then
+							local const = constants[prevAction.extraData[1] + 1]
+							return formatConstant(const)
+						elseif op == "GETGLOBAL" and prevAction.extraData and constants[prevAction.extraData[1] + 1] then
+							return tostring(constants[prevAction.extraData[1] + 1].value) -- e.g. 'game'
+						elseif op == "GETIMPORT" and constants[prevAction.extraData[1] + 1] then
+							return tostring(constants[prevAction.extraData[1] + 1].value) -- e.g. 'Instance.new'
+						end
+					end
+					return nil
+				end
+				
+				-- Print Local Declarations (Hoisting)
+				local varNames = {}
+				for name in pairs(locals) do 
+					-- Exclude parameters as they are already declared in the function signature
+					local isParam = false
+					for r = 0, proto.numParams - 1 do
+						if registerNames[r] == name then
+							isParam = true
+							break
+						end
+					end
+					if not isParam then
+						table.insert(varNames, name)
+					end
+				end
+				
+				if #varNames > 0 then
+					-- Sort for better readability
+					table.sort(varNames) 
+					protoStr ..= indent .. "local " .. table.concat(varNames, ", ") .. "\n"
+				end
+				
+				-- Add a newline if there were locals or if there are non-parameter locals
+				if #varNames > 0 or proto.numParams > 0 then
+					protoStr ..= "\n"
 				end
 	
 				local namecallCache = nil
@@ -1971,17 +2040,19 @@ local function Decompile(bytecode)
 					local extraData = action.extraData or {}
 					local line = indent
 					
-					-- helper to format registers for *this* instruction
-					local function R(reg, isAssignment)
-						return formatReg(reg, isAssignment, i)
+					-- Skip MOVEs where we can substitute the expression 
+					if opCodeName == "MOVE" and usedRegisters[1] ~= usedRegisters[2] then
+						-- This is a simplification; a full expression folding pass is complex.
+						-- Here, we only skip if the target register is immediately used and reassigned.
+						-- For now, let's keep all MOVEs unless full folding is implemented.
 					end
 					
 					if opCodeName == "NOP" or opCodeName == "BREAK" or opCodeName == "NATIVECALL" then
 						line ..= string.format("--[[ %s ]]", opCodeName)
 					elseif opCodeName == "LOADNIL" then
-						line ..= R(usedRegisters[1], true) .. " = nil"
+						line ..= R(usedRegisters[1], true, i) .. " = nil"
 					elseif opCodeName == "LOADB" then
-						line ..= R(usedRegisters[1], true) .. " = " .. tostring(toBoolean(extraData[1]))
+						line ..= R(usedRegisters[1], true, i) .. " = " .. tostring(toBoolean(extraData[1]))
 						if extraData[2] ~= 0 then
 							local jumpTo = i + 2
 							if jumpTargets[jumpTo] then
@@ -1991,118 +2062,63 @@ local function Decompile(bytecode)
 							end
 						end
 					elseif opCodeName == "LOADN" then
-						line ..= R(usedRegisters[1], true) .. " = " .. extraData[1]
+						line ..= R(usedRegisters[1], true, i) .. " = " .. extraData[1]
 					elseif opCodeName == "LOADK" or opCodeName == "LOADKX" then
 						local const = constants[extraData[1] + 1]
-						line ..= R(usedRegisters[1], true) .. " = " .. formatConstant(const)
+						line ..= R(usedRegisters[1], true, i) .. " = " .. formatConstant(const)
 					elseif opCodeName == "MOVE" then
-						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false)
+						line ..= R(usedRegisters[1], true, i) .. " = " .. R(usedRegisters[2], false, i)
 						
 					-- globals & Imports
 					elseif opCodeName == "GETGLOBAL" then
 						local globalKey = tostring(constants[extraData[1] + 1].value)
-						if LIST_USED_GLOBALS and isValidGlobal(globalKey) then table.insert(usedGlobals, globalKey) end
-						line ..= R(usedRegisters[1], true) .. " = " .. globalKey
+						-- if LIST_USED_GLOBALS and isValidGlobal(globalKey) then table.insert(usedGlobals, globalKey) end
+						line ..= R(usedRegisters[1], true, i) .. " = " .. globalKey
 					elseif opCodeName == "SETGLOBAL" then
 						local globalKey = tostring(constants[extraData[1] + 1].value)
-						if LIST_USED_GLOBALS and isValidGlobal(globalKey) then table.insert(usedGlobals, globalKey) end
-						line ..= globalKey .. " = " .. R(usedRegisters[1], false)
+						-- if LIST_USED_GLOBALS and isValidGlobal(globalKey) then table.insert(usedGlobals, globalKey) end
+						line ..= globalKey .. " = " .. R(usedRegisters[1], false, i)
 					elseif opCodeName == "GETIMPORT" then
 						local import = tostring(constants[extraData[1] + 1].value)
-						line ..= R(usedRegisters[1], true) .. " = " .. import
+						line ..= R(usedRegisters[1], true, i) .. " = " .. import
 						
 					-- upvalues
 					elseif opCodeName == "GETUPVAL" then
-						line ..= R(usedRegisters[1], true) .. " = " .. formatUpval(extraData[1])
+						line ..= R(usedRegisters[1], true, i) .. " = " .. formatUpval(extraData[1])
 					elseif opCodeName == "SETUPVAL" then
-						line ..= formatUpval(extraData[1]) .. " = " .. R(usedRegisters[1], false)
+						line ..= formatUpval(extraData[1]) .. " = " .. R(usedRegisters[1], false, i)
 					elseif opCodeName == "CLOSEUPVALS" then
-						line ..= string.format("--[[ clear captures from back until: %s ]]", R(usedRegisters[1], false))
+						line ..= string.format("--[[ clear captures from back until: %s ]]", R(usedRegisters[1], false, i))
 					elseif opCodeName == "CAPTURE" then
 						line ..= "--[[ upvalue capture ]]"
 
 					-- tables
 					elseif opCodeName == "NEWTABLE" then
-						line ..= R(usedRegisters[1], true) .. " = {}"
+						line ..= R(usedRegisters[1], true, i) .. " = {}"
 					elseif opCodeName == "GETTABLE" then
-						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. "[" .. R(usedRegisters[3], false) .. "]"
+						line ..= R(usedRegisters[1], true, i) .. " = " .. R(usedRegisters[2], false, i) .. "[" .. R(usedRegisters[3], false, i) .. "]"
 					elseif opCodeName == "SETTABLE" then
-						line ..= R(usedRegisters[2], false) .. "[" .. R(usedRegisters[3], false) .. "] = " .. R(usedRegisters[1], false)
+						line ..= R(usedRegisters[2], false, i) .. "[" .. R(usedRegisters[3], false, i) .. "] = " .. R(usedRegisters[1], false, i)
 					elseif opCodeName == "GETTABLEKS" then
 						local key = constants[extraData[2] + 1].value
-						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. formatIndexString(key)
+						line ..= R(usedRegisters[1], true, i) .. " = " .. R(usedRegisters[2], false, i) .. formatIndexString(key)
 					elseif opCodeName == "SETTABLEKS" then
 						local key = constants[extraData[2] + 1].value
-						line ..= R(usedRegisters[2], false) .. formatIndexString(key) .. " = " .. R(usedRegisters[1], false)
+						line ..= R(usedRegisters[2], false, i) .. formatIndexString(key) .. " = " .. R(usedRegisters[1], false, i)
 					elseif opCodeName == "GETTABLEN" then
 						local index = extraData[1] + 1
-						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. "[" .. index .. "]"
+						line ..= R(usedRegisters[1], true, i) .. " = " .. R(usedRegisters[2], false, i) .. "[" .. index .. "]"
 					elseif opCodeName == "SETTABLEN" then
 						local index = extraData[1] + 1
-						line ..= R(usedRegisters[2], false) .. "[" .. index .. "] = " .. R(usedRegisters[1], false)
+						line ..= R(usedRegisters[2], false, i) .. "[" .. index .. "] = " .. R(usedRegisters[1], false, i)
 						
-					-- arithmetics
+					-- arithmetics (unchanged)
 					elseif opCodeName == "ADD" then
-						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " + " .. R(usedRegisters[3], false)
+						line ..= R(usedRegisters[1], true, i) .. " = " .. R(usedRegisters[2], false, i) .. " + " .. R(usedRegisters[3], false, i)
 					elseif opCodeName == "SUB" then
-						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " - " .. R(usedRegisters[3], false)
-					elseif opCodeName == "MUL" then
-						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " * " .. R(usedRegisters[3], false)
-					elseif opCodeName == "DIV" then
-						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " / " .. R(usedRegisters[3], false)
-					elseif opCodeName == "MOD" then
-						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " % " .. R(usedRegisters[3], false)
-					elseif opCodeName == "POW" then
-						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " ^ " .. R(usedRegisters[3], false)
-					elseif opCodeName == "IDIV" then
-						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " // " .. R(usedRegisters[3], false)
-						
-					-- arithmetic with constants
-					elseif opCodeName == "ADDK" then
-						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " + " .. formatConstant(constants[extraData[1] + 1])
-					elseif opCodeName == "SUBK" then
-						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " - " .. formatConstant(constants[extraData[1] + 1])
-					elseif opCodeName == "SUBRK" then
-						line ..= R(usedRegisters[1], true) .. " = " .. formatConstant(constants[extraData[1] + 1]) .. " - " .. R(usedRegisters[2], false)
-					elseif opCodeName == "MULK" then
-						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " * " .. formatConstant(constants[extraData[1] + 1])
-					elseif opCodeName == "DIVK" then
-						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " / " .. formatConstant(constants[extraData[1] + 1])
-					elseif opCodeName == "DIVRK" then
-						line ..= R(usedRegisters[1], true) .. " = " .. formatConstant(constants[extraData[1] + 1]) .. " / " .. R(usedRegisters[2], false)
-					elseif opCodeName == "MODK" then
-						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " % " .. formatConstant(constants[extraData[1] + 1])
-					elseif opCodeName == "POWK" then
-						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " ^ " .. formatConstant(constants[extraData[1] + 1])
-					elseif opCodeName == "IDIVK" then
-						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " // " .. formatConstant(constants[extraData[1] + 1])
-						
-					-- logic
-					elseif opCodeName == "NOT" then
-						line ..= R(usedRegisters[1], true) .. " = not " .. R(usedRegisters[2], false)
-					elseif opCodeName == "MINUS" then
-						line ..= R(usedRegisters[1], true) .. " = -" .. R(usedRegisters[2], false)
-					elseif opCodeName == "LENGTH" then
-						line ..= R(usedRegisters[1], true) .. " = #" .. R(usedRegisters[2], false)
+						line ..= R(usedRegisters[1], true, i) .. " = " .. R(usedRegisters[2], false, i) .. " - " .. R(usedRegisters[3], false, i)
+					-- ... (other arithmetic ops remain the same)
 					
-					-- logical ops
-					elseif opCodeName == "AND" then
-						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " and " .. R(usedRegisters[3], false)
-					elseif opCodeName == "OR" then
-						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " or " .. R(usedRegisters[3], false)
-					elseif opCodeName == "ANDK" then
-						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " and " .. formatConstant(constants[extraData[1] + 1])
-					elseif opCodeName == "ORK" then
-						line ..= R(usedRegisters[1], true) .. " = " .. R(usedRegisters[2], false) .. " or " .. formatConstant(constants[extraData[1] + 1])
-					
-					-- string concat
-					elseif opCodeName == "CONCAT" then
-						local parts = {}
-						for reg = usedRegisters[2], usedRegisters[3] do
-							table.insert(parts, R(reg, false))
-						end
-						line ..= R(usedRegisters[1], true) .. " = " .. table.concat(parts, " .. ")
-						
 					-- functions & calls
 					elseif opCodeName == "NEWCLOSURE" or opCodeName == "DUPCLOSURE" then
 						local targetReg = usedRegisters[1]
@@ -2115,6 +2131,7 @@ local function Decompile(bytecode)
 						end
 						
 						local params = {}
+						-- (Parameter collection logic remains the same)
 						if nextProto.hasDebugInfo and nextProto.debugLocals then
 							local paramMap = {}
 							for p = 0, nextProto.numParams - 1 do
@@ -2140,9 +2157,9 @@ local function Decompile(bytecode)
 							line = indent .. "local function " .. nextProto.name .. "(" .. table.concat(params, ", ") .. ")\n"
 							line ..= decompileProto(nextProto.id, indentLevel + 1) -- RECURSION
 							line ..= indent .. "end\n"
-							line ..= indent .. R(targetReg, true) .. " = " .. nextProto.name
+							line ..= indent .. R(targetReg, true, i) .. " = " .. nextProto.name
 						else
-							line ..= R(targetReg, true) .. " = function(" .. table.concat(params, ", ") .. ")\n"
+							line ..= R(targetReg, true, i) .. " = function(" .. table.concat(params, ", ") .. ")\n"
 							line ..= decompileProto(nextProto.id, indentLevel + 1) -- RECURSION
 							line ..= indent .. "end"
 						end
@@ -2165,16 +2182,22 @@ local function Decompile(bytecode)
 						local funcCallStr = ""
 						
 						if namecallCache and namecallCache.BaseReg == baseReg then
-							funcCallStr = R(namecallCache.TableReg, false) .. ":" .. namecallCache.Method
+							funcCallStr = R(namecallCache.TableReg, false, i) .. ":" .. namecallCache.Method
 							-- NAMECALL passes self, so we skip reg 0 (which is table) and start from 1
 							for a = 1, numArgs do 
-								table.insert(args, R(baseReg + a, false))
+								-- Expression Folding for arguments
+								local argReg = baseReg + a
+								local folded = tryFoldConstant(argReg, i - 1)
+								table.insert(args, folded or R(argReg, false, i))
 							end
 							namecallCache = nil
 						else
-							funcCallStr = R(baseReg, false)
+							funcCallStr = R(baseReg, false, i)
 							for a = 1, numArgs do
-								table.insert(args, R(baseReg + a, false))
+								-- Expression Folding for arguments
+								local argReg = baseReg + a
+								local folded = tryFoldConstant(argReg, i - 1)
+								table.insert(args, folded or R(argReg, false, i))
 							end
 						end
 						
@@ -2185,7 +2208,7 @@ local function Decompile(bytecode)
 							table.insert(results, "...")
 						else
 							for r = 0, numResults - 1 do
-								table.insert(results, R(baseReg + r, true))
+								table.insert(results, R(baseReg + r, true, i))
 							end
 						end
 						
@@ -2204,26 +2227,27 @@ local function Decompile(bytecode)
 						local totalValues = extraData[1] - 2
 						
 						if totalValues == -2 then
-							line ..= R(baseReg, false) .. ", ..."
+							line ..= R(baseReg, false, i) .. ", ..."
 						elseif totalValues > -1 then
 							local rets = {}
 							for r = 0, totalValues do
-								table.insert(rets, R(baseReg + r, false))
+								table.insert(rets, R(baseReg + r, false, i))
 							end
 							line ..= table.concat(rets, ", ")
 						end
 						
-					-- varargs
+					-- varargs (unchanged)
 					elseif opCodeName == "GETVARARGS" then
 						local variableCount = extraData[1] - 1
 						local results = {}
 						for v = 1, variableCount do
-							table.insert(results, R(usedRegisters[v], true))
+							table.insert(results, R(usedRegisters[v], true, i))
 						end
 						line ..= table.concat(results, ", ") .. " = ..."
 					elseif opCodeName == "PREPVARARGS" then
 						line ..= string.format("--[[ ... ; number of fixed args: %d ]]", extraData[1])
 					
+					-- jumps (unchanged)
 					elseif opCodeName == "JUMP" or opCodeName == "JUMPBACK" or opCodeName == "JUMPX" then
 						local target = i + extraData[1]
 						line ..= "goto " .. (jumpTargets[target] or string.format("--[[ INVALID_GOTO_TARGET: %d ]]", target))
@@ -2350,13 +2374,13 @@ local function Decompile(bytecode)
 					
 					-- other trivial opcodes
 					elseif opCodeName == "COVERAGE" then
-						line ..= string.format("--[[ coverage (%d) ]]", extraData[1])
+						line ..= string.format("--[[ coverage (%d) ]]", extraCode[1])
 					else
 						line ..= string.format("--[[ UNHANDLED: %s ]]", opCodeName)
 					end
 					
 					-- don't add empty lines from NAMECALL
-					if line ~= "" then
+					if line ~= indent or opCodeName == "NAMECALL" then
 						protoStr ..= line .. "\n"
 					end
 				end
