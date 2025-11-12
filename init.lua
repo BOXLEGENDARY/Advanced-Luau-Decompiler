@@ -1422,8 +1422,7 @@ local function Decompile(bytecode)
 						elseif opCodeName == "MULK" then
 							local targetRegister = usedRegisters[1]
 							local sourceRegister = usedRegisters[2]
-
-_						
+			
 							local value = formatConstantValue(constants[extraData[1] + 1])
 
 							result ..= formatRegister(targetRegister) .." = ".. formatRegister(sourceRegister) .." * ".. value
