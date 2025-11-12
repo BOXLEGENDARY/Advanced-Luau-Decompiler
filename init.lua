@@ -1883,7 +1883,7 @@ local function Decompile(bytecode)
 							table.insert(localNameMap[loc.register], {
 								name = loc.name,
 								start = loc.startPC,
-								stop = loc.endPC
+								stop = loc.stopPC
 							})
 						end
 					end
@@ -1917,6 +1917,12 @@ local function Decompile(bytecode)
 						targetPC = i + extra[1] + 2 -- Target is after the FORGLOOP
 					elseif op == "FORGLOOP" then
 						targetPC = i + extra[1] -- Target is the *start* of the loop (prep)
+					
+					-- ::: NEW CHANGE HERE :::
+					-- LOADB A,B,C jumps 1 instruction (to i+2) if C ~= 0
+					-- This is crucial for if/else assignment blocks
+					elseif op == "LOADB" and (extra[2] or 0) ~= 0 then
+						targetPC = i + 2 
 					end
 					
 					if targetPC and targetPC > 0 and targetPC <= #actions and not jumpTargets[targetPC] then
@@ -1986,14 +1992,23 @@ local function Decompile(bytecode)
 					
 					if opCodeName == "LOADNIL" then
 						line ..= R(usedRegisters[1], true) .. " = nil"
+					
+					-- ::: MODIFIED BLOCK HERE :::
 					elseif opCodeName == "LOADB" then
 						line ..= R(usedRegisters[1], true) .. " = " .. tostring(toBoolean(extraData[1]))
 						if extraData[2] ~= 0 then
-							-- This is a conditional load, part of `a = b and c` or `a = b or c`
-							-- The jump target is the *next* instruction if false
-							local jumpTo = i + extraData[2]
-							line ..= string.format(" --[[ Conditional load: Jumps to %s if %s ]]", jumpTargets[jumpTo] or jumpTo, tostring(not toBoolean(extraData[1])))
+							-- This is a conditional load, part of an if/else block
+							-- It jumps over the next instruction (i+1) to (i+2)
+							local jumpTo = i + 2
+							if jumpTargets[jumpTo] then
+								line ..= "\n" .. indent .. "goto " .. jumpTargets[jumpTo]
+							else
+								-- Fallback, should not happen if pre-pass is correct
+								line ..= string.format(" --[[ Jumps to %d ]]", jumpTo) 
+							end
 						end
+					-- ::: END OF MODIFIED BLOCK :::
+
 					elseif opCodeName == "LOADN" then
 						line ..= R(usedRegisters[1], true) .. " = " .. extraData[1]
 					elseif opCodeName == "LOADK" or opCodeName == "LOADKX" then
@@ -2331,13 +2346,10 @@ local function Decompile(bytecode)
 						indentLevel = indentLevel - 1
 						indent = getIndent(indentLevel)
 						line = indent .. "end " .. string.format("--[[ Loops to %s ]]", jumpTargets[loopToPC] or loopToPC)
-	
-					-- Fallback for unhandled opcodes
 					else
 						line ..= string.format("--[[ UNHANDLED: %s ]]", opCodeName)
 					end
 					
-					-- Don't add empty lines from NAMECALL
 					if line ~= "" then
 						protoStr ..= line .. "\n"
 					end
@@ -2346,11 +2358,8 @@ local function Decompile(bytecode)
 				return protoStr
 			end
 			
-			-- Main entry point for optdec
-			result = "--[[ DECOMPILATION WARNING ]]\n"
-			result ..= "--[[ This output is for analysis and is much clearer than raw disassembly. ]]\n\n"
+			result ..= "\n\n"
 			
-			-- Start decompilation from the main proto
 			result ..= decompileProto(mainProtoId, 0)
 			
 			finalResult = processResult(result)
