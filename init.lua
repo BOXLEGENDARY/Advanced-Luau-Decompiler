@@ -1846,7 +1846,8 @@ local function Decompile(bytecode)
 				elseif type(k.value) == "string" then
 					return toEscapedString(k.value)
 				elseif type(k.value) == "number" then
-					return tonumber(string.format(`%0.{READER_FLOAT_PRECISION}f`, k.value))
+					-- Using 'tostring(k.value)' is usually safer for number formatting in Lua
+					return tostring(k.value)
 				else
 					return tostring(k.value)
 				end
@@ -1866,10 +1867,6 @@ local function Decompile(bytecode)
 				local locals = {} -- [register] -> true
 				local localNameMap = {} -- [register] -> list of {name, start, stop}
 				local upvalueNameMap = {} -- [index] -> name
-				
-				local jumpTargets = {} -- [pc] -> true
-				local pcToLabel = {}
-				local labelCounter = 1
 				
 				if proto.hasDebugInfo then
 					if proto.debugLocals then
@@ -1891,42 +1888,8 @@ local function Decompile(bytecode)
 					end
 				end
 				
-				for i, action in actions do
-					if action.hide then continue end
-					
-					local op = action.opCode.name
-					local extra = action.extraData or {}
-					local targetPC = nil
-					
-					if op == "JUMP" or op == "JUMPBACK" or op == "JUMPX" then
-						targetPC = i + extra[1]
-					elseif string.sub(op, 1, 7) == "JUMPIF" then
-						targetPC = i + extra[1]
-					elseif string.sub(op, 1, 7) == "JUMPXEQ" then
-						targetPC = i + extra[1]
-					elseif op == "FORNPREP" then
-						targetPC = i + extra[1] -- end of loop
-					elseif op == "FORNLOOP" then
-						targetPC = i + extra[1] -- start of loop
-					elseif op == "FORGPREP" or op == "FORGPREP_NEXT" or op == "FORGPREP_INEXT" then
-						targetPC = i + extra[1] + 2 -- after FORGLOOP
-					elseif op == "FORGLOOP" then
-						targetPC = i + extra[1] -- start of loop (prep)
-					elseif op == "LOADB" and (extra[2] or 0) ~= 0 then
-						targetPC = i + 2 
-					end
-					
-					if targetPC and targetPC > 0 and targetPC <= #actions then
-						jumpTargets[targetPC] = true
-					end
-				end
-				
 				local function getLabel(pc)
-					if not pcToLabel[pc] then
-						pcToLabel[pc] = string.format("label_%d", labelCounter)
-						labelCounter = labelCounter + 1
-					end
-					return pcToLabel[pc]
+					return string.format("PC_%d", pc) 
 				end
 
 				-- [pc] -> { { type = "end", indent = -1 }, { type = "else", indent = 0 } }
@@ -1988,10 +1951,6 @@ local function Decompile(bytecode)
 							end
 						end
 						blockClosures[i] = nil
-					end
-					
-					if jumpTargets[i] then
-						protoStr ..= getIndent(indentLevel) .. "::" .. getLabel(i) .. "::\n"
 					end
 
 					local action = actions[i]
@@ -2071,7 +2030,7 @@ local function Decompile(bytecode)
 							
 						elseif opCodeName == "JUMP" or opCodeName == "JUMPBACK" or opCodeName == "JUMPX" then
 							local targetPC = i + extraData[1]
-							line ..= "goto " .. getLabel(targetPC)
+							line ..= string.format("--[[ JUMP to PC: %s ]]", targetPC) 
 							protoStr ..= line .. "\n"
 							
 						elseif opCodeName == "FORNPREP" then
@@ -2107,8 +2066,6 @@ local function Decompile(bytecode)
 							protoStr ..= line .. "\n"
 							indentLevel = indentLevel + 1
 							
-							-- i จะถูกเพิ่มที่ท้ายบล็อก else หลัก
-							
 						elseif opCodeName == "FORGPREP" then
 							local endAtPC = i + extraData[1] + 2
 							local loopAction = actions[i + extraData[1] + 1]
@@ -2142,7 +2099,7 @@ local function Decompile(bytecode)
 							line ..= R(usedRegisters[1], true) .. " = " .. tostring(toBoolean(extraData[1]))
 							if extraData[2] ~= 0 then
 								local jumpTo = i + 2 -- LOADB skips next instruction
-								line ..= "\n" .. indent .. "goto " .. getLabel(jumpTo)
+								line ..= string.format("\n" .. indent .. "--[[ LOADB skip to PC: %s ]]", jumpTo)
 							end
 						elseif opCodeName == "LOADN" then
 							line ..= R(usedRegisters[1], true) .. " = " .. extraData[1]
