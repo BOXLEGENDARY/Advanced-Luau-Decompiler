@@ -1828,19 +1828,25 @@ local function Decompile(bytecode)
 			finalResult = processResult(result)
 		else -- optdec
 			local result = ""
-			
+			local indentationCache = {}
+	
 			local function getIndent(level)
-				return string.rep("    ", level)
+				if not indentationCache[level] then
+					indentationCache[level] = string.rep("\t", level)
+				end
+				return indentationCache[level]
 			end
-
+	
+			-- helper to format constants
 			local function formatConstant(k)
-				if not k then return "nil" end
+				if not k then return "nil --[[ ERROR: Missing Constant ]]" end
+				
 				if k.type == LuauBytecodeTag.LBC_CONSTANT_VECTOR then
-					return string.format("Vector3.new(%g, %g, %g)", k.value.x, k.value.y, k.value.z)
-				elseif k.type == LuauBytecodeTag.LBC_CONSTANT_STRING then
-					return toEscapedString(k.value)
+					return k.value
 				elseif type(k.value) == "string" then
 					return toEscapedString(k.value)
+				elseif type(k.value) == "number" then
+					return tostring(k.value)
 				else
 					return tostring(k.value)
 				end
@@ -1848,406 +1854,608 @@ local function Decompile(bytecode)
 			
 			local function decompileProto(protoId, indentLevel)
 				local protoActions = registerActions[protoId]
+				if not protoActions then return "--[[ ERROR: Proto not found ]]\n" end
+				
 				local proto = protoActions.proto
 				local actions = protoActions.actions
 				local constants = proto.constants
 				local innerProtos = proto.innerProtos
-				local captures = proto.captures
 				
 				local protoStr = ""
 				
+				-- [reg] -> "varName_version"
 				local registerState = {} 
+				-- [baseName] -> count (e.g., "var_1" -> 3)
 				local varVersionCounter = {} 
+				-- [fullName] -> true (e.g., "var_1_3" -> true)
 				local declaredLocals = {} 
-				local localNameMap = {}
+				-- [index] -> name
 				local upvalueNameMap = {}
-
+				-- [register] -> list of {name, start, stop}
+				local localNameMap = {}
+				
 				if proto.hasDebugInfo then
 					if proto.debugLocals then
 						for _, loc in ipairs(proto.debugLocals) do
-							if not localNameMap[loc.register] then localNameMap[loc.register] = {} end
-							table.insert(localNameMap[loc.register], { name = loc.name, start = loc.startPC, stop = loc.endPC })
+							if not localNameMap[loc.register] then
+								localNameMap[loc.register] = {}
+							end
+							table.insert(localNameMap[loc.register], {
+								name = loc.name,
+								start = loc.startPC,
+								stop = loc.stopPC
+							})
 						end
 					end
 					if proto.debugUpvalues then
-						for i, upv in ipairs(proto.debugUpvalues) do upvalueNameMap[i - 1] = upv.name end
+						for i, upv in ipairs(proto.debugUpvalues) do
+							upvalueNameMap[i - 1] = upv.name -- upvalues 0-indexed
+						end
 					end
 				end
+				
+				local function getLabel(pc)
+					return string.format("PC_%d", pc) 
+				end
 
-				local function getBaseName(reg, pc)
+				-- [pc] -> { { type = "end", indent = -1 }, { type = "else", indent = 0 } }
+				local blockClosures = {}
+
+				local function getBaseName(reg, currentPC)
 					if localNameMap[reg] then
 						for _, info in ipairs(localNameMap[reg]) do
-							if pc >= info.start and pc <= info.stop then return info.name end
+							if currentPC >= info.start and currentPC <= info.stop then
+								return info.name
+							end
 						end
 					end
-					return (reg < proto.numParams) and ("p" .. (reg + 1)) or ("v" .. (reg - proto.numParams + 1))
-				end
-
-				local function R_Read(reg, pc)
-					return registerState[reg] or getBaseName(reg, pc)
-				end
-
-				local function R_Write(reg, pc, forceLocal)
-					local base = getBaseName(reg, pc)
-					local ver = (varVersionCounter[base] or 0) + 1
-					varVersionCounter[base] = ver
 					
-					local name = base
-					if ver > 1 and reg >= proto.numParams then 
-						name = base .. "_" .. ver 
+					if reg < proto.numParams then
+						return string.format("param_%d", reg + 1)
+					else
+						return string.format("var_%d", reg - proto.numParams + 1)
 					end
-
-					registerState[reg] = name
-					
-					if not declaredLocals[name] or forceLocal then
-						declaredLocals[name] = true
-						return "local " .. name
-					end
-					return name
 				end
 
-				local function formatUpval(idx) return upvalueNameMap[idx] or ("uv" .. idx) end
-
-				local jumpTargets = {} -- [targetPC] = count
-				local isLoopHeader = {} -- [pc] = true
-				local loopEnds = {} -- [endPC] = startPC
-
-				for i, action in ipairs(actions) do
-					local op = action.opCode.name
-					if string.find(op, "JUMP") then
-						local offset = action.extraData[1]
-						local target = i + offset + 1
+				local function R_Read(reg, currentPC)
+					local varName = registerState[reg]
+					if varName then
+						return varName
+					end
+					
+					local baseName = getBaseName(reg, currentPC)
+					if reg < proto.numParams then
+						local versionedName = baseName
+						if not string.find(baseName, "param_") then
+							varVersionCounter[baseName] = 1
+							versionedName = baseName
+						else
+							varVersionCounter[baseName] = 1
+							versionedName = baseName .. "_1"
+						end
 						
-						if not jumpTargets[target] then jumpTargets[target] = 0 end
-						jumpTargets[target] = jumpTargets[target] + 1
-
-						if offset < 0 then
-							isLoopHeader[target] = true
-							loopEnds[i] = target
-						end
+						registerState[reg] = versionedName
+						declaredLocals[versionedName] = true
+						return versionedName
 					end
+					
+					-- read before write?
+					return baseName .. "_READ_BEFORE_WRITE"
 				end
 
-				local processedPC = {}
-
-				local function decompileChunk(startPC, endPC, lvl)
-					local chunk = ""
-					local pc = startPC
+				local function R_Write(reg, currentPC)
+					local baseName = getBaseName(reg, currentPC)
+					local newName
 					
-					while pc < endPC do
-						if processedPC[pc] then 
-							pc = pc + 1 
-							continue 
+					if string.sub(baseName, 1, 4) == "var_" or (string.sub(baseName, 1, 6) == "param_" and reg >= proto.numParams) then
+						local version = (varVersionCounter[baseName] or 0) + 1
+						varVersionCounter[baseName] = version
+						newName = baseName .. "_" .. version
+					else
+						if reg < proto.numParams and not localNameMap[reg] then
+							local version = (varVersionCounter[baseName] or 0) + 1
+							varVersionCounter[baseName] = version
+							newName = baseName .. "_" .. version
+						elseif reg < proto.numParams and localNameMap[reg] then
+							newName = baseName
+						else
+							newName = baseName
+						end
+					end
+					
+					registerState[reg] = newName
+					
+					local prefix = ""
+					if not declaredLocals[newName] then
+						
+						local isParam = reg < proto.numParams
+						if isParam then
+							if not string.find(newName, "_") and not (varVersionCounter[baseName] and varVersionCounter[baseName] > 1) then
+								declaredLocals[newName] = true
+								return newName
+							end
 						end
 
-						local action = actions[pc]
-						local op = action.opCode.name
-						local indent = getIndent(lvl)
-						local regs = action.usedRegisters or {}
-						local data = action.extraData or {}
-
-						if isLoopHeader[pc] then
-							local loopEndIdx = -1
-							for j = pc, endPC do
-								if loopEnds[j] == pc then loopEndIdx = j end
-							end
-
-							if loopEndIdx ~= -1 then
-								chunk ..= indent .. "while true do\n"
-								processedPC[pc] = true
-								
-								chunk ..= decompileChunk(pc + 1, loopEndIdx, lvl + 1)
-								
-								chunk ..= indent .. "end\n"
-								pc = loopEndIdx + 1
-								continue
+						declaredLocals[newName] = true
+						prefix = "local "
+					end
+					
+					return prefix .. newName
+				end
+				
+				local paramNames = {}
+				for r = 0, proto.numParams - 1 do
+					local baseName = getBaseName(r, 1) -- PC 1
+					local newName
+					
+					if string.sub(baseName, 1, 6) == "param_" then
+						varVersionCounter[baseName] = 1
+						newName = baseName .. "_1"
+					else
+						newName = baseName -- "player"
+					end
+					
+					registerState[r] = newName
+					declaredLocals[newName] = true
+					table.insert(paramNames, newName)
+				end
+				
+				local function formatUpval(upvalIdx)
+					if upvalueNameMap[upvalIdx] then
+						return upvalueNameMap[upvalIdx]
+					end
+					return string.format("upvalue_%d", upvalIdx + 1) 
+				end
+	
+				local namecallCache = nil
+				
+				local i = 1
+				while i <= #actions do
+				
+					if blockClosures[i] then
+						local closures = blockClosures[i]
+						table.sort(closures, function(a, b) return a.indent < b.indent end)
+						
+						for _, block in ipairs(closures) do
+							indentLevel = indentLevel + block.indent
+							local currentIndent = getIndent(indentLevel)
+							
+							if block.type == "else" then
+								protoStr ..= currentIndent .. "else\n"
+								indentLevel = indentLevel + 1 -- for the 'else' body
+							else -- "end"
+								protoStr ..= currentIndent .. "end\n"
 							end
 						end
+						blockClosures[i] = nil
+					end
 
-						local isCondJump = (op == "JUMPIF" or op == "JUMPIFNOT" or string.find(op, "JUMPIF") or string.find(op, "JUMPXEQ"))
-						if isCondJump then
-							local offset = action.extraData[1]
-							local target = pc + offset + 1
-							
-							local condStr = "???"
-							if op == "JUMPIF" then condStr = "not " .. R_Read(regs[1], pc)
-							elseif op == "JUMPIFNOT" then condStr = R_Read(regs[1], pc)
-							elseif op == "JUMPIFEQ" then condStr = R_Read(regs[1], pc) .. " ~= " .. R_Read(regs[2], pc)
-							elseif op == "JUMPIFNOTEQ" then condStr = R_Read(regs[1], pc) .. " == " .. R_Read(regs[2], pc)
-							elseif op == "JUMPIFLE" then condStr = R_Read(regs[1], pc) .. " > " .. R_Read(regs[2], pc)
-							elseif op == "JUMPIFLT" then condStr = R_Read(regs[1], pc) .. " >= " .. R_Read(regs[2], pc)
-							elseif op == "JUMPIFNOTLE" then condStr = R_Read(regs[1], pc) .. " <= " .. R_Read(regs[2], pc)
-							elseif op == "JUMPIFNOTLT" then condStr = R_Read(regs[1], pc) .. " < " .. R_Read(regs[2], pc)
-							elseif string.find(op, "JUMPXEQ") then
-								local aux = action.extraData[2]
-								local sign = (bit32.rshift(aux, 0x1F) ~= 1) and "~=" or "=="
-								local r1 = R_Read(regs[1], pc)
-								local val = "nil"
-								if op == "JUMPXEQKN" or op == "JUMPXEQKS" then 
-									val = formatConstant(constants[bit32.band(aux, 0xFFFFFF) + 1])
-								elseif op == "JUMPXEQKB" then
-									val = tostring(toBoolean(bit32.band(aux, 1)))
-								end
-								condStr = r1 .. " " .. sign .. " " .. val
-							end
-
-							local elseStart = -1
-							local ifEnd = target
-							local preTargetAction = actions[target - 1]
-							
-							if preTargetAction and (preTargetAction.opCode.name == "JUMP" or preTargetAction.opCode.name == "JUMPX") then
-								if preTargetAction.extraData[1] > 0 then
-									elseStart = target
-									ifEnd = target + preTargetAction.extraData[1] + 1
-								end
-							end
-
-							chunk ..= indent .. "if " .. condStr .. " then\n"
-
-							local trueBlockEnd = (elseStart ~= -1) and (elseStart - 1) or (target - 1)
-							
-							chunk ..= decompileChunk(pc + 1, trueBlockEnd + 1, lvl + 1)
-
-							if elseStart ~= -1 then
-								chunk ..= indent .. "else\n"
-								chunk ..= decompileChunk(elseStart, ifEnd, lvl + 1)
-								pc = ifEnd
-							else
-								pc = target
-							end
-							
-							chunk ..= indent .. "end\n"
-							continue
-						end
-
+					local action = actions[i]
+					
+					if action.hide or action.handled then 
+						i = i + 1
+					else 					
+						local opCodeName = action.opCode.name
+						local usedRegisters = action.usedRegisters or {}
+						local extraData = action.extraData or {}
+						local indent = getIndent(indentLevel)
 						local line = indent
 						
-						if op == "MOVE" then
-							line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc)
-						elseif op == "LOADK" or op == "LOADKX" then
-							line ..= R_Write(regs[1], pc) .. " = " .. formatConstant(constants[data[1] + 1])
-						elseif op == "LOADN" then
-							line ..= R_Write(regs[1], pc) .. " = " .. data[1]
-						elseif op == "LOADB" then
-							line ..= R_Write(regs[1], pc) .. " = " .. tostring(toBoolean(data[1]))
-							if data[2] ~= 0 then pc = pc + data[2] end
-						elseif op == "LOADNIL" then
-							line ..= R_Write(regs[1], pc) .. " = nil"
-						elseif op == "GETGLOBAL" then
-							local gName = tostring(constants[data[1] + 1].value)
-							if LIST_USED_GLOBALS and isValidGlobal(gName) then table.insert(usedGlobals, gName) end
-							line ..= R_Write(regs[1], pc) .. " = " .. gName
-						elseif op == "SETGLOBAL" then
-							line ..= tostring(constants[data[1] + 1].value) .. " = " .. R_Read(regs[1], pc)
-						elseif op == "GETUPVAL" then
-							line ..= R_Write(regs[1], pc) .. " = " .. formatUpval(data[1])
-						elseif op == "SETUPVAL" then
-							line ..= formatUpval(data[1]) .. " = " .. R_Read(regs[1], pc)
-						elseif op == "GETIMPORT" then
-							local imp = tostring(constants[data[1] + 1].value)
-							line ..= R_Write(regs[1], pc) .. " = " .. imp
+						local isConditionalJump = (string.sub(opCodeName, 1, 7) == "JUMPIF") or (string.sub(opCodeName, 1, 7) == "JUMPXEQ")
 						
-						elseif op == "NEWTABLE" then
-							line ..= R_Write(regs[1], pc) .. " = {}"
-						elseif op == "DUPTABLE" then
-							local tConst = constants[data[1] + 1].value
-							line ..= R_Write(regs[1], pc) .. " = { --[[ DUPTABLE size: ".. tConst.size .." ]] }"
-						elseif op == "SETLIST" then
-							local base = regs[1]
-							local src = regs[2]
-							local startIdx = data[1]
-							local count = data[2]
-							line = ""
-							if count == 0 then
-								chunk ..= indent .. R_Read(base, pc) .. " = { ... } -- SETLIST MULTRET todo\n"
-							else
-								for k = 0, count - 2 do -- count includes base
-									chunk ..= indent .. R_Read(base, pc) .. "[" .. (startIdx + k) .. "] = " .. R_Read(src + k, pc) .. "\n"
+						if isConditionalJump then
+							local targetPC = i + extraData[1]
+							local conditionStr = ""
+							
+							if opCodeName == "JUMPIF" then -- if NOT ... then jump
+								conditionStr = "not " .. R_Read(usedRegisters[1], i)
+							elseif opCodeName == "JUMPIFNOT" then -- if ... then jump
+								conditionStr = R_Read(usedRegisters[1], i)
+							elseif opCodeName == "JUMPIFEQ" then
+								conditionStr = R_Read(usedRegisters[1], i) .. " ~= " .. R_Read(usedRegisters[2], i)
+							elseif opCodeName == "JUMPIFLE" then
+								conditionStr = R_Read(usedRegisters[1], i) .. " > " .. R_Read(usedRegisters[2], i)
+							elseif opCodeName == "JUMPIFLT" then
+								conditionStr = R_Read(usedRegisters[1], i) .. " >= " .. R_Read(usedRegisters[2], i)
+							elseif opCodeName == "JUMPIFNOTEQ" then
+								conditionStr = R_Read(usedRegisters[1], i) .. " == " .. R_Read(usedRegisters[2], i)
+							elseif opCodeName == "JUMPIFNOTLE" then
+								conditionStr = R_Read(usedRegisters[1], i) .. " < " .. R_Read(usedRegisters[2], i)
+							elseif opCodeName == "JUMPIFNOTLT" then
+								conditionStr = R_Read(usedRegisters[1], i) .. " <= " .. R_Read(usedRegisters[2], i)
+							
+							elseif opCodeName == "JUMPXEQKNIL" or opCodeName == "JUMPXEQKB" or opCodeName == "JUMPXEQKN" or opCodeName == "JUMPXEQKS" then
+								local sign = (bit32.rshift(extraData[2], 0x1F) ~= 1) and "~=" or "=="
+								local val = "nil"
+								if opCodeName == "JUMPXEQKB" then
+									val = tostring(toBoolean(bit32.band(extraData[2], 1)))
+								elseif opCodeName == "JUMPXEQKN" or opCodeName == "JUMPXEQKS" then
+									val = formatConstant(constants[bit32.band(extraData[2], 0xFFFFFF) + 1])
 								end
+								conditionStr = string.format("%s %s %s", R_Read(usedRegisters[1], i), (sign == "==") and "~=" or "==", val)
+							end
+
+							local elseJump = actions[targetPC - 1]
+							if elseJump and not elseJump.handled and (elseJump.opCode.name == "JUMP" or elseJump.opCode.name == "JUMPX") then
+								local endPC = (targetPC - 1) + elseJump.extraData[1]
+								
+								line ..= "if " .. conditionStr .. " then"
+								protoStr ..= line .. "\n"
+								indentLevel = indentLevel + 1
+								
+								if not blockClosures[targetPC] then blockClosures[targetPC] = {} end
+								table.insert(blockClosures[targetPC], 1, { type = "else", indent = -1 })
+								
+								if not blockClosures[endPC] then blockClosures[endPC] = {} end
+								table.insert(blockClosures[endPC], 1, { type = "end", indent = -1 })
+								
+								elseJump.handled = true -- mark this JUMP as handled
+							
+							else
+								line ..= "if " .. conditionStr .. " then"
+								protoStr ..= line .. "\n"
+								indentLevel = indentLevel + 1
+								
+								if not blockClosures[targetPC] then blockClosures[targetPC] = {} end
+								table.insert(blockClosures[targetPC], 1, { type = "end", indent = -1 })
 							end
 							
-						elseif op == "GETTABLEKS" then
-							line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. "." .. tostring(constants[data[2] + 1].value)
-						elseif op == "SETTABLEKS" then
-							line ..= R_Read(regs[2], pc) .. "." .. tostring(constants[data[2] + 1].value) .. " = " .. R_Read(regs[1], pc)
-						elseif op == "GETTABLE" then
-							line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. "[" .. R_Read(regs[3], pc) .. "]"
-						elseif op == "SETTABLE" then
-							line ..= R_Read(regs[2], pc) .. "[" .. R_Read(regs[3], pc) .. "] = " .. R_Read(regs[1], pc)
+						elseif opCodeName == "JUMP" or opCodeName == "JUMPBACK" or opCodeName == "JUMPX" then
+							local targetPC = i + extraData[1]
+							line ..= string.format("--[[ JUMP to PC: %s ]]", targetPC) 
+							protoStr ..= line .. "\n"
+							
+						elseif opCodeName == "FORNPREP" then
+							local endAtPC = i + extraData[1]
+							line ..= string.format("for %s = %s, %s, %s do", 
+								R_Write(usedRegisters[3], i), -- index
+								R_Read(usedRegisters[3], i), -- start (already in index reg)
+								R_Read(usedRegisters[1], i), -- limit
+								R_Read(usedRegisters[2], i) -- step
+							)
+							if not blockClosures[endAtPC] then blockClosures[endAtPC] = {} end
+							table.insert(blockClosures[endAtPC], 1, { type = "end", indent = -1 })
+							
+							protoStr ..= line .. "\n"
+							indentLevel = indentLevel + 1
+							
+						elseif opCodeName == "FORNLOOP" then
+							action.handled = true
+							
+						elseif opCodeName == "FORGPREP_NEXT" or opCodeName == "FORGPREP_INEXT" then
+							local endAtPC = i + extraData[1] + 2
+							local loopType = (opCodeName == "FORGPREP_NEXT") and "pairs" or "ipairs"
+							
+							line ..= string.format("for %s, %s in %s(%s) do",
+								R_Write(usedRegisters[1] + 2, i), -- k
+								R_Write(usedRegisters[1] + 3, i), -- v
+								loopType,
+								R_Read(usedRegisters[1], i) -- tbl
+							)
+							if not blockClosures[endAtPC] then blockClosures[endAtPC] = {} end
+							table.insert(blockClosures[endAtPC], 1, { type = "end", indent = -1 })
 
-                        elseif op == "IDIV" then 
-                            line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. " // " .. R_Read(regs[3], pc)
-                        elseif op == "IDIVK" then 
-                            line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. " // " .. formatConstant(constants[data[1] + 1])						
-
-                        elseif op == "SUBRK" then 
-                            line ..= R_Write(regs[1], pc) .. " = " .. formatConstant(constants[data[1] + 1]) .. " - " .. R_Read(regs[2], pc)
-                        elseif op == "DIVRK" then 
-                            line ..= R_Write(regs[1], pc) .. " = " .. formatConstant(constants[data[1] + 1]) .. " / " .. R_Read(regs[2], pc)
-
-                        elseif string.find(op, "FASTCALL") then
-                            line = ""
-
-						elseif op == "ADD" then line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. " + " .. R_Read(regs[3], pc)
-						elseif op == "SUB" then line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. " - " .. R_Read(regs[3], pc)
-						elseif op == "MUL" then line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. " * " .. R_Read(regs[3], pc)
-						elseif op == "DIV" then line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. " / " .. R_Read(regs[3], pc)
-						elseif op == "POW" then line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. " ^ " .. R_Read(regs[3], pc)
-						elseif op == "MOD" then line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. " % " .. R_Read(regs[3], pc)
+							protoStr ..= line .. "\n"
+							indentLevel = indentLevel + 1
+							
+						elseif opCodeName == "FORGPREP" then
+							local endAtPC = i + extraData[1] + 2
+							local loopAction = actions[i + extraData[1] + 1]
+							local vars = {}
+							if loopAction and loopAction.usedRegisters then
+								for _, reg in ipairs(loopAction.usedRegisters) do
+									table.insert(vars, R_Write(reg, i))
+								end
+							else
+								table.insert(vars, "var_err")
+							end
+							
+							line ..= string.format("for %s in %s do",
+								table.concat(vars, ", "),
+								R_Read(usedRegisters[1], i)
+							)
+							if not blockClosures[endAtPC] then blockClosures[endAtPC] = {} end
+							table.insert(blockClosures[endAtPC], 1, { type = "end", indent = -1 })
+							
+							protoStr ..= line .. "\n"
+							indentLevel = indentLevel + 1
+							
+						elseif opCodeName == "FORGLOOP" then
+							action.handled = true
 						
-						elseif op == "ADDK" then line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. " + " .. formatConstant(constants[data[1] + 1])
-						elseif op == "SUBK" then line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. " - " .. formatConstant(constants[data[1] + 1])
-						elseif op == "MULK" then line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. " * " .. formatConstant(constants[data[1] + 1])
-						elseif op == "DIVK" then line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. " / " .. formatConstant(constants[data[1] + 1])
-						elseif op == "MODK" then line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. " % " .. formatConstant(constants[data[1] + 1])
-						elseif op == "POWK" then line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. " ^ " .. formatConstant(constants[data[1] + 1])
-
-						elseif op == "NOT" then line ..= R_Write(regs[1], pc) .. " = not " .. R_Read(regs[2], pc)
-						elseif op == "MINUS" then line ..= R_Write(regs[1], pc) .. " = -" .. R_Read(regs[2], pc)
-						elseif op == "LENGTH" then line ..= R_Write(regs[1], pc) .. " = #" .. R_Read(regs[2], pc)
-						elseif op == "AND" then line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. " and " .. R_Read(regs[3], pc)
-						elseif op == "OR" then line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. " or " .. R_Read(regs[3], pc)
-						elseif op == "ANDK" then line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. " and " .. formatConstant(constants[data[1] + 1])
-						elseif op == "ORK" then line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. " or " .. formatConstant(constants[data[1] + 1])
-
-						elseif op == "CONCAT" then
-							local s = ""
-							for k = regs[2], regs[3] do
-								s = s .. R_Read(k, pc) .. (k < regs[3] and " .. " or "")
+						elseif opCodeName == "NOP" or opCodeName == "BREAK" or opCodeName == "NATIVECALL" then
+							line ..= string.format("--[[ %s ]]", opCodeName)
+						elseif opCodeName == "LOADNIL" then
+							line ..= R_Write(usedRegisters[1], i) .. " = nil"
+						elseif opCodeName == "LOADB" then
+							line ..= R_Write(usedRegisters[1], i) .. " = " .. tostring(toBoolean(extraData[1]))
+							if extraData[2] ~= 0 then
+								local jumpTo = i + 2 -- LOADB skips next instruction
+								line ..= string.format("\n" .. indent .. "--[[ LOADB skip to PC: %s ]]", jumpTo)
 							end
-							line ..= R_Write(regs[1], pc) .. " = " .. s
+						elseif opCodeName == "LOADN" then
+							line ..= R_Write(usedRegisters[1], i) .. " = " .. extraData[1]
+						elseif opCodeName == "LOADK" or opCodeName == "LOADKX" then
+							local const = constants[extraData[1] + 1]
+							line ..= R_Write(usedRegisters[1], i) .. " = " .. formatConstant(const)
+						elseif opCodeName == "MOVE" then
+							line ..= R_Write(usedRegisters[1], i) .. " = " .. R_Read(usedRegisters[2], i)
+							
+						elseif opCodeName == "GETGLOBAL" then
+							local globalKey = tostring(constants[extraData[1] + 1].value)
+							if LIST_USED_GLOBALS and isValidGlobal(globalKey) then table.insert(usedGlobals, globalKey) end
+							line ..= R_Write(usedRegisters[1], i) .. " = " .. globalKey
+						elseif opCodeName == "SETGLOBAL" then
+							local globalKey = tostring(constants[extraData[1] + 1].value)
+							if LIST_USED_GLOBALS and isValidGlobal(globalKey) then table.insert(usedGlobals, globalKey) end
+							line ..= globalKey .. " = " .. R_Read(usedRegisters[1], i)
+						elseif opCodeName == "GETIMPORT" then
+							local import = tostring(constants[extraData[1] + 1].value)
+							line ..= R_Write(usedRegisters[1], i) .. " = " .. import
+							
+						elseif opCodeName == "GETUPVAL" then
+							line ..= R_Write(usedRegisters[1], i) .. " = " .. formatUpval(extraData[1])
+						elseif opCodeName == "SETUPVAL" then
+							line ..= formatUpval(extraData[1]) .. " = " .. R_Read(usedRegisters[1], i)
+						elseif opCodeName == "CLOSEUPVALS" then
+							line ..= string.format("--[[ clear captures from back until: %s ]]", R_Read(usedRegisters[1], i))
+						elseif opCodeName == "CAPTURE" then
+							line ..= "--[[ upvalue capture ]]"
 
-						elseif op == "NEWCLOSURE" or op == "DUPCLOSURE" then
-							local protoIndex
-							if op == "NEWCLOSURE" then
-								protoIndex = data[1] + 1
+						elseif opCodeName == "NEWTABLE" then
+							line ..= R_Write(usedRegisters[1], i) .. " = {}"
+						elseif opCodeName == "GETTABLE" then
+							line ..= R_Write(usedRegisters[1], i) .. " = " .. R_Read(usedRegisters[2], i) .. "[" .. R_Read(usedRegisters[3], i) .. "]"
+						elseif opCodeName == "SETTABLE" then
+							line ..= R_Read(usedRegisters[2], i) .. "[" .. R_Read(usedRegisters[3], i) .. "] = " .. R_Read(usedRegisters[1], i)
+						elseif opCodeName == "GETTABLEKS" then
+							local key = constants[extraData[2] + 1].value
+							line ..= R_Write(usedRegisters[1], i) .. " = " .. R_Read(usedRegisters[2], i) .. formatIndexString(key)
+						elseif opCodeName == "SETTABLEKS" then
+							local key = constants[extraData[2] + 1].value
+							line ..= R_Read(usedRegisters[2], i) .. formatIndexString(key) .. " = " .. R_Read(usedRegisters[1], i)
+						elseif opCodeName == "GETTABLEN" then
+							local index = extraData[1] + 1
+							line ..= R_Write(usedRegisters[1], i) .. " = " .. R_Read(usedRegisters[2], i) .. "[" .. index .. "]"
+						elseif opCodeName == "SETTABLEN" then
+							local index = extraData[1] + 1
+							line ..= R_Read(usedRegisters[2], i) .. "[" .. index .. "] = " .. R_Read(usedRegisters[1], i)
+							
+						elseif opCodeName == "ADD" then
+							line ..= R_Write(usedRegisters[1], i) .. " = " .. R_Read(usedRegisters[2], i) .. " + " .. R_Read(usedRegisters[3], i)
+						elseif opCodeName == "SUB" then
+							line ..= R_Write(usedRegisters[1], i) .. " = " .. R_Read(usedRegisters[2], i) .. " - " .. R_Read(usedRegisters[3], i)
+						elseif opCodeName == "MUL" then
+							line ..= R_Write(usedRegisters[1], i) .. " = " .. R_Read(usedRegisters[2], i) .. " * " .. R_Read(usedRegisters[3], i)
+						elseif opCodeName == "DIV" then
+							line ..= R_Write(usedRegisters[1], i) .. " = " .. R_Read(usedRegisters[2], i) .. " / " .. R_Read(usedRegisters[3], i)
+						elseif opCodeName == "MOD" then
+							line ..= R_Write(usedRegisters[1], i) .. " = " .. R_Read(usedRegisters[2], i) .. " % " .. R_Read(usedRegisters[3], i)
+						elseif opCodeName == "POW" then
+							line ..= R_Write(usedRegisters[1], i) .. " = " .. R_Read(usedRegisters[2], i) .. " ^ " .. R_Read(usedRegisters[3], i)
+						elseif opCodeName == "IDIV" then
+							line ..= R_Write(usedRegisters[1], i) .. " = " .. R_Read(usedRegisters[2], i) .. " // " .. R_Read(usedRegisters[3], i)
+							
+						elseif opCodeName == "ADDK" then
+							line ..= R_Write(usedRegisters[1], i) .. " = " .. R_Read(usedRegisters[2], i) .. " + " .. formatConstant(constants[extraData[1] + 1])
+						elseif opCodeName == "SUBK" then
+							line ..= R_Write(usedRegisters[1], i) .. " = " .. R_Read(usedRegisters[2], i) .. " - " .. formatConstant(constants[extraData[1] + 1])
+						elseif opCodeName == "SUBRK" then
+							line ..= R_Write(usedRegisters[1], i) .. " = " .. formatConstant(constants[extraData[1] + 1]) .. " - " .. R_Read(usedRegisters[2], i)
+						elseif opCodeName == "MULK" then
+							line ..= R_Write(usedRegisters[1], i) .. " = " .. R_Read(usedRegisters[2], i) .. " * " .. formatConstant(constants[extraData[1] + 1])
+						elseif opCodeName == "DIVK" then
+							line ..= R_Write(usedRegisters[1], i) .. " = " .. R_Read(usedRegisters[2], i) .. " / " .. formatConstant(constants[extraData[1] + 1])
+						elseif opCodeName == "DIVRK" then
+							line ..= R_Write(usedRegisters[1], i) .. " = " .. formatConstant(constants[extraData[1] + 1]) .. " / " .. R_Read(usedRegisters[2], i)
+						elseif opCodeName == "MODK" then
+							line ..= R_Write(usedRegisters[1], i) .. " = " .. R_Read(usedRegisters[2], i) .. " % " .. formatConstant(constants[extraData[1] + 1])
+						elseif opCodeName == "POWK" then
+							line ..= R_Write(usedRegisters[1], i) .. " = " .. R_Read(usedRegisters[2], i) .. " ^ " .. formatConstant(constants[extraData[1] + 1])
+						elseif opCodeName == "IDIVK" then
+							line ..= R_Write(usedRegisters[1], i) .. " = " .. R_Read(usedRegisters[2], i) .. " // " .. formatConstant(constants[extraData[1] + 1])
+							
+						elseif opCodeName == "NOT" then
+							line ..= R_Write(usedRegisters[1], i) .. " = not " .. R_Read(usedRegisters[2], i)
+						elseif opCodeName == "MINUS" then
+							line ..= R_Write(usedRegisters[1], i) .. " = -" .. R_Read(usedRegisters[2], i)
+						elseif opCodeName == "LENGTH" then
+							line ..= R_Write(usedRegisters[1], i) .. " = #" .. R_Read(usedRegisters[2], i)
+						
+						elseif opCodeName == "AND" then
+							line ..= R_Write(usedRegisters[1], i) .. " = " .. R_Read(usedRegisters[2], i) .. " and " .. R_Read(usedRegisters[3], i)
+						elseif opCodeName == "OR" then
+							line ..= R_Write(usedRegisters[1], i) .. " = " .. R_Read(usedRegisters[2], i) .. " or " .. R_Read(usedRegisters[3], i)
+						elseif opCodeName == "ANDK" then
+							line ..= R_Write(usedRegisters[1], i) .. " = " .. R_Read(usedRegisters[2], i) .. " and " .. formatConstant(constants[extraData[1] + 1])
+						elseif opCodeName == "ORK" then
+							line ..= R_Write(usedRegisters[1], i) .. " = " .. R_Read(usedRegisters[2], i) .. " or " .. formatConstant(constants[extraData[1] + 1])
+						
+						elseif opCodeName == "CONCAT" then
+							local parts = {}
+							for reg = usedRegisters[2], usedRegisters[3] do
+								table.insert(parts, R_Read(reg, i))
+							end
+							line ..= R_Write(usedRegisters[1], i) .. " = " .. table.concat(parts, " .. ")
+							
+						elseif opCodeName == "NEWCLOSURE" or opCodeName == "DUPCLOSURE" then
+							local targetReg = usedRegisters[1]
+							local nextProto
+							
+							if opCodeName == "NEWCLOSURE" then
+								nextProto = innerProtos[extraData[1] + 1]
 							else
-								protoIndex = constants[data[1] + 1].value
+								nextProto = protoTable[constants[extraData[1] + 1].value - 1]
 							end
 							
-							local nextProto = (op == "NEWCLOSURE") and innerProtos[protoIndex] or protoTable[protoIndex - 1]
-							
-							local params = ""
-							if nextProto.numParams > 0 then
-								for p = 1, nextProto.numParams do
-									params = params .. "p" .. (totalParameters + p) .. (p < nextProto.numParams and ", " or "")
+							local paramsList = {}
+							local nextProtoParams = {}
+							if nextProto.hasDebugInfo and nextProto.debugLocals then
+								for p = 0, nextProto.numParams - 1 do
+									for _, loc in ipairs(nextProto.debugLocals) do
+										if loc.register == p and loc.startPC == 1 then
+											nextProtoParams[p] = loc.name
+											break
+										end
+									end
 								end
 							end
-							if nextProto.isVarArg then
-								params = params .. (nextProto.numParams > 0 and ", ..." or "...")
+							for p = 0, nextProto.numParams - 1 do
+								table.insert(paramsList, nextProtoParams[p] or string.format("param_%d", p + 1))
 							end
-
-							line ..= R_Write(regs[1], pc) .. " = function(" .. params .. ")\n"
-							line ..= decompileProto(nextProto.id, lvl + 1)
-							line ..= indent .. "end"
-
-						elseif op == "NAMECALL" then
-							line = ""
-						elseif op == "CALL" then
-							local base = regs[1]
-							local nArgs = data[1] - 1
-							local nRet = data[2] - 1
 							
-							local isMethod = false
-							local methodName = ""
-							if pc > 1 and actions[pc-1].opCode.name == "NAMECALL" then
-								isMethod = true
-								methodName = tostring(constants[actions[pc-1].extraData[2] + 1].value)
-							end
-
-							local callStr = ""
-							if isMethod then
-								callStr = R_Read(base, pc) .. ":" .. methodName .. "("
-								for k = 2, nArgs do
-									callStr ..= R_Read(base + k, pc) .. (k < nArgs and ", " or "")
-								end
+							if nextProto.isVarArg then table.insert(paramsList, "...") end
+							
+							local funcDef
+							if nextProto.name then
+								funcDef = "function " .. nextProto.name .. "(" .. table.concat(paramsList, ", ") .. ")"
 							else
-								callStr = R_Read(base, pc) .. "("
-								for k = 1, nArgs do
-									callStr ..= R_Read(base + k, pc) .. (k < nArgs and ", " or "")
-								end
+								funcDef = "function(" .. table.concat(paramsList, ", ") .. ")"
 							end
 
-							if nArgs == -1 then callStr ..= "..." end
-							callStr ..= ")"
+							local protoBody = decompileProto(nextProto.id, indentLevel + 1)
 							
-							if nRet == 0 then
-								line ..= callStr
+							if nextProto.name then
+								line = indent .. "local " .. funcDef .. "\n"
+								line ..= protoBody
+								line ..= indent .. "end\n"
+								line ..= indent .. R_Write(targetReg, i) .. " = " .. nextProto.name
 							else
-								local rets = ""
-								for k = 0, (nRet > 0 and nRet - 1 or 0) do
-									rets ..= R_Write(base + k, pc) .. (k < (nRet-1) and ", " or "")
-								end
-								if nRet == -1 then rets = "..." end
-								line ..= rets .. " = " .. callStr
+								line ..= R_Write(targetReg, i) .. " = " .. funcDef .. "\n"
+								line ..= protoBody
+								line ..= indent .. "end"
 							end
 							
-						elseif op == "RETURN" then
+						elseif opCodeName == "NAMECALL" then
+							local method = tostring(constants[extraData[2] + 1].value)
+							namecallCache = {
+								BaseReg = usedRegisters[1],
+								TableReg = usedRegisters[2],
+								Method = method
+							}
+							line = "" -- don't output anything yet
+							
+						elseif opCodeName == "CALL" then
+							local baseReg = usedRegisters[1]
+							local numArgs = extraData[1] - 1
+							local numResults = extraData[2] - 1
+							
+							local args = {}
+							local funcCallStr = ""
+							
+							if namecallCache and namecallCache.BaseReg == baseReg then
+								funcCallStr = R_Read(namecallCache.TableReg, i) .. ":" .. namecallCache.Method
+								for a = 1, numArgs do 
+									table.insert(args, R_Read(baseReg + a, i))
+								end
+								namecallCache = nil
+							else
+								funcCallStr = R_Read(baseReg, i)
+								for a = 1, numArgs do
+									table.insert(args, R_Read(baseReg + a, i))
+								end
+							end
+							
+							if numArgs == -1 then -- MULTCALL
+								table.insert(args, "...") 
+							end
+							
+							local results = {}
+							if numResults == -1 then
+								table.insert(results, "...")
+							else
+								for r = 0, numResults - 1 do
+									table.insert(results, R_Write(baseReg + r, i))
+								end
+							end
+							
+							local resultsStr = table.concat(results, ", ")
+							if resultsStr ~= "" and resultsStr ~= "..." then
+								line ..= resultsStr .. " = "
+							elseif resultsStr == "..." then
+								line ..= "" -- "... = "
+							end
+							
+							line ..= funcCallStr .. "(" .. table.concat(args, ", ") .. ")"
+							
+						elseif opCodeName == "RETURN" then
 							line ..= "return "
-							local nRet = data[1] - 2
-							if nRet == -2 then -- MULTRET
-								line ..= R_Read(regs[1], pc) .. ", ..."
-							elseif nRet > -1 then
-								for k = 0, nRet do
-									line ..= R_Read(regs[1] + k, pc) .. (k < nRet and ", " or "")
+							local baseReg = usedRegisters[1]
+							local totalValues = extraData[1] - 2
+							
+							if totalValues == -2 then -- MULTRET
+								line ..= R_Read(baseReg, i) .. ", ..."
+							elseif totalValues > -1 then
+								local rets = {}
+								for r = 0, totalValues do
+									table.insert(rets, R_Read(baseReg + r, i))
+								end
+								line ..= table.concat(rets, ", ")
+							end
+							
+						elseif opCodeName == "GETVARARGS" then
+							local variableCount = extraData[1] - 1
+							local results = {}
+							if variableCount == -1 then -- ... = ...
+								table.insert(results, R_Write(usedRegisters[1], i))
+							else
+								for v = 1, variableCount do
+									table.insert(results, R_Write(usedRegisters[v], i))
 								end
 							end
+							line ..= table.concat(results, ", ") .. " = ..."
+						elseif opCodeName == "PREPVARARGS" then
+							line ..= string.format("--[[ ... ; number of fixed args: %d ]]", extraData[1])
 						
-						elseif op == "FORNPREP" then
-							local jumpTo = pc + data[1] + 1
-							local idx = regs[3]
-							local limit = regs[1]
-							local step = regs[2]
-							line ..= "for " .. R_Write(idx, pc) .. " = " .. R_Read(idx, pc) .. ", " .. R_Read(limit, pc) .. ", " .. R_Read(step, pc) .. " do"
-							chunk ..= line .. "\n"
-							chunk ..= decompileChunk(pc + 1, jumpTo - 1, lvl + 1)
-							chunk ..= indent .. "end\n"
-							pc = jumpTo
-							continue 
-						elseif op == "FORNLOOP" then
-							line = ""
+						elseif opCodeName == "FASTCALL" then
+							line ..= string.format("--[[ FASTCALL; %s() ]]", Luau:GetBuiltinInfo(extraData[1]))
+						elseif opCodeName == "FASTCALL1" then
+							line ..= string.format("--[[ FASTCALL1; %s(%s) ]]", Luau:GetBuiltinInfo(extraData[1]), R_Read(usedRegisters[1], i))
+						elseif opCodeName == "FASTCALL2" then
+							line ..= string.format("--[[ FASTCALL2; %s(%s, %s) ]]", Luau:GetBuiltinInfo(extraData[1]), R_Read(usedRegisters[1], i), R_Read(usedRegisters[2], i))
+						elseif opCodeName == "FASTCALL2K" then
+							local value = formatConstant(constants[extraData[3] + 1])
+							line ..= string.format("--[[ FASTCALL2K; %s(%s, %s) ]]", Luau:GetBuiltinInfo(extraData[1]), R_Read(usedRegisters[1], i), value)
+						elseif opCodeName == "FASTCALL3" then
+							line ..= string.format("--[[ FASTCALL3; %s(%s, %s, %s) ]]", Luau:GetBuiltinInfo(extraData[1]), R_Read(usedRegisters[1], i), R_Read(usedRegisters[2], i), R_Read(usedRegisters[3], i))
 						
-						elseif op == "FORGPREP" or op == "FORGPREP_NEXT" or op == "FORGPREP_INEXT" then
-							local jumpTo = pc + data[1] + 1
-							local gen = regs[1]
-							line ..= "for " .. R_Write(gen + 3, pc) .. ", " .. R_Write(gen + 4, pc) .. " in " .. ((op == "FORGPREP_INEXT") and "ipairs" or "pairs/next") .. "(" .. R_Read(gen, pc) .. ") do"
-							
-							chunk ..= line .. "\n"
-							chunk ..= decompileChunk(pc + 1, jumpTo - 1, lvl + 1)
-							chunk ..= indent .. "end\n"
-							pc = jumpTo
-							continue
-						elseif op == "FORGLOOP" then
-							line = ""
-
-						elseif op == "JUMP" or op == "JUMPBACK" or op == "JUMPX" then
-							 if data[1] > 0 then
-								-- forward jump, maybe break or just skip?
-								line ..= "-- jump to " .. (pc + data[1] + 1)
-							 else
-								line ..= "-- jump back " .. (pc + data[1] + 1)
-							 end
-						elseif op == "BREAK" then
-							line ..= "break"
+						elseif opCodeName == "COVERAGE" then
+							line ..= string.format("--[[ coverage (%d) ]]", extraData[1])
 						else
-							line ..= "-- " .. op
+							line ..= string.format("--[[ UNHANDLED: %s ]]", opCodeName)
 						end
 						
-						if line ~= indent and line ~= "" then
-							chunk ..= line .. "\n"
+						-- don't add empty lines from NAMECALL
+						if line ~= "" and line ~= indent then
+							protoStr ..= line .. "\n"
 						end
 						
-						pc = pc + 1
+						i = i + 1
 					end
-					return chunk
+				end
+				
+				if blockClosures[#actions + 1] then
+					local closures = blockClosures[#actions + 1]
+					table.sort(closures, function(a, b) return a.indent < b.indent end)
+					
+					for _, block in ipairs(closures) do
+						indentLevel = indentLevel + block.indent
+						local currentIndent = getIndent(indentLevel)
+						protoStr ..= currentIndent .. block.type .. "\n"
+					end
 				end
 
-				protoStr ..= decompileChunk(1, #actions + 1, indentLevel)
 				return protoStr
 			end
 			
 			result ..= "\n"
+			
 			local mainProto = protoTable[mainProtoId]
+			local mainParams = {}
+			if mainProto.isVarArg then
+				table.insert(mainParams, "...")
+			end
+			
 			result ..= decompileProto(mainProtoId, 0)
 			finalResult = processResult(result)
 		end
