@@ -8,7 +8,7 @@ local ENABLED_REMARKS = {
 ------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 local DECOMPILER_TIMEOUT = 2 -- seconds
 local READER_FLOAT_PRECISION = 7 -- up to 99
-local DECOMPILER_MODE = "disasm" -- disasm/optdec
+local DECOMPILER_MODE = "optdec" -- disasm/optdec
 local SHOW_DEBUG_INFORMATION = true -- show trivial function and array allocation details
 local SHOW_INSTRUCTION_LINES = true -- show lines as they are in the source code
 local SHOW_OPERATION_NAMES = true
@@ -228,7 +228,7 @@ local function Decompile(bytecode)
 										type = localType,
 										register = localRegister,
 										startPC = localStartPC,
-										--endPC = localEndPC -- unused in the disassembler
+										endPC = localEndPC -- unused in the disassembler
 									}
 									typedLocals[i] = info
 								end
@@ -417,8 +417,8 @@ local function Decompile(bytecode)
 
 						for i = 1, totalDebugLocals do
 							local localName = stringTable[reader:nextVarInt()]
-							local localStartPC = reader:nextVarInt()
-							local localEndPC = reader:nextVarInt()
+							local localStartPC = reader:nextVarInt() + 1 -- PC is 1-based in our actions
+							local localEndPC = reader:nextVarInt() + localStartPC - 1 -- Make it 1-based
 							local localRegister = reader:nextByte()
 
 							-- debug info on the local at index `i`
@@ -1826,14 +1826,429 @@ local function Decompile(bytecode)
 			writeActions(registerActions[mainProtoId])
 
 			finalResult = processResult(result)
-		else -- assume optdec - optimized decompiler
+		else -- optdec
 			local result = ""
-			-- remove temporary registers and some optimization passes
-			local function optimize(code)
-				result = code
+			
+			local function getIndent(level)
+				return string.rep("    ", level)
 			end
-			optimize("-- one day..")
 
+			local function formatConstant(k)
+				if not k then return "nil" end
+				if k.type == LuauBytecodeTag.LBC_CONSTANT_VECTOR then
+					return string.format("Vector3.new(%g, %g, %g)", k.value.x, k.value.y, k.value.z)
+				elseif k.type == LuauBytecodeTag.LBC_CONSTANT_STRING then
+					return toEscapedString(k.value)
+				elseif type(k.value) == "string" then
+					return toEscapedString(k.value)
+				else
+					return tostring(k.value)
+				end
+			end
+			
+			local function decompileProto(protoId, indentLevel)
+				local protoActions = registerActions[protoId]
+				local proto = protoActions.proto
+				local actions = protoActions.actions
+				local constants = proto.constants
+				local innerProtos = proto.innerProtos
+				local captures = proto.captures
+				
+				local protoStr = ""
+				
+				local registerState = {} 
+				local varVersionCounter = {} 
+				local declaredLocals = {} 
+				local localNameMap = {}
+				local upvalueNameMap = {}
+
+				if proto.hasDebugInfo then
+					if proto.debugLocals then
+						for _, loc in ipairs(proto.debugLocals) do
+							if not localNameMap[loc.register] then localNameMap[loc.register] = {} end
+							table.insert(localNameMap[loc.register], { name = loc.name, start = loc.startPC, stop = loc.endPC })
+						end
+					end
+					if proto.debugUpvalues then
+						for i, upv in ipairs(proto.debugUpvalues) do upvalueNameMap[i - 1] = upv.name end
+					end
+				end
+
+				local function getBaseName(reg, pc)
+					if localNameMap[reg] then
+						for _, info in ipairs(localNameMap[reg]) do
+							if pc >= info.start and pc <= info.stop then return info.name end
+						end
+					end
+					return (reg < proto.numParams) and ("p" .. (reg + 1)) or ("v" .. (reg - proto.numParams + 1))
+				end
+
+				local function R_Read(reg, pc)
+					return registerState[reg] or getBaseName(reg, pc)
+				end
+
+				local function R_Write(reg, pc, forceLocal)
+					local base = getBaseName(reg, pc)
+					local ver = (varVersionCounter[base] or 0) + 1
+					varVersionCounter[base] = ver
+					
+					local name = base
+					if ver > 1 and reg >= proto.numParams then 
+						name = base .. "_" .. ver 
+					end
+
+					registerState[reg] = name
+					
+					if not declaredLocals[name] or forceLocal then
+						declaredLocals[name] = true
+						return "local " .. name
+					end
+					return name
+				end
+
+				local function formatUpval(idx) return upvalueNameMap[idx] or ("uv" .. idx) end
+
+				local jumpTargets = {} -- [targetPC] = count
+				local isLoopHeader = {} -- [pc] = true
+				local loopEnds = {} -- [endPC] = startPC
+
+				for i, action in ipairs(actions) do
+					local op = action.opCode.name
+					if string.find(op, "JUMP") then
+						local offset = action.extraData[1]
+						local target = i + offset + 1
+						
+						if not jumpTargets[target] then jumpTargets[target] = 0 end
+						jumpTargets[target] = jumpTargets[target] + 1
+
+						if offset < 0 then
+							isLoopHeader[target] = true
+							loopEnds[i] = target
+						end
+					end
+				end
+
+				local processedPC = {}
+
+				local function decompileChunk(startPC, endPC, lvl)
+					local chunk = ""
+					local pc = startPC
+					
+					while pc < endPC do
+						if processedPC[pc] then 
+							pc = pc + 1 
+							continue 
+						end
+
+						local action = actions[pc]
+						local op = action.opCode.name
+						local indent = getIndent(lvl)
+						local regs = action.usedRegisters or {}
+						local data = action.extraData or {}
+
+						if isLoopHeader[pc] then
+							local loopEndIdx = -1
+							for j = pc, endPC do
+								if loopEnds[j] == pc then loopEndIdx = j end
+							end
+
+							if loopEndIdx ~= -1 then
+								chunk ..= indent .. "while true do\n"
+								processedPC[pc] = true
+								
+								chunk ..= decompileChunk(pc + 1, loopEndIdx, lvl + 1)
+								
+								chunk ..= indent .. "end\n"
+								pc = loopEndIdx + 1
+								continue
+							end
+						end
+
+						local isCondJump = (op == "JUMPIF" or op == "JUMPIFNOT" or string.find(op, "JUMPIF") or string.find(op, "JUMPXEQ"))
+						if isCondJump then
+							local offset = action.extraData[1]
+							local target = pc + offset + 1
+							
+							local condStr = "???"
+							if op == "JUMPIF" then condStr = "not " .. R_Read(regs[1], pc)
+							elseif op == "JUMPIFNOT" then condStr = R_Read(regs[1], pc)
+							elseif op == "JUMPIFEQ" then condStr = R_Read(regs[1], pc) .. " ~= " .. R_Read(regs[2], pc)
+							elseif op == "JUMPIFNOTEQ" then condStr = R_Read(regs[1], pc) .. " == " .. R_Read(regs[2], pc)
+							elseif op == "JUMPIFLE" then condStr = R_Read(regs[1], pc) .. " > " .. R_Read(regs[2], pc)
+							elseif op == "JUMPIFLT" then condStr = R_Read(regs[1], pc) .. " >= " .. R_Read(regs[2], pc)
+							elseif op == "JUMPIFNOTLE" then condStr = R_Read(regs[1], pc) .. " <= " .. R_Read(regs[2], pc)
+							elseif op == "JUMPIFNOTLT" then condStr = R_Read(regs[1], pc) .. " < " .. R_Read(regs[2], pc)
+							elseif string.find(op, "JUMPXEQ") then
+								local aux = action.extraData[2]
+								local sign = (bit32.rshift(aux, 0x1F) ~= 1) and "~=" or "=="
+								local r1 = R_Read(regs[1], pc)
+								local val = "nil"
+								if op == "JUMPXEQKN" or op == "JUMPXEQKS" then 
+									val = formatConstant(constants[bit32.band(aux, 0xFFFFFF) + 1])
+								elseif op == "JUMPXEQKB" then
+									val = tostring(toBoolean(bit32.band(aux, 1)))
+								end
+								condStr = r1 .. " " .. sign .. " " .. val
+							end
+
+							local elseStart = -1
+							local ifEnd = target
+							local preTargetAction = actions[target - 1]
+							
+							if preTargetAction and (preTargetAction.opCode.name == "JUMP" or preTargetAction.opCode.name == "JUMPX") then
+								if preTargetAction.extraData[1] > 0 then
+									elseStart = target
+									ifEnd = target + preTargetAction.extraData[1] + 1
+								end
+							end
+
+							chunk ..= indent .. "if " .. condStr .. " then\n"
+
+							local trueBlockEnd = (elseStart ~= -1) and (elseStart - 1) or (target - 1)
+							
+							chunk ..= decompileChunk(pc + 1, trueBlockEnd + 1, lvl + 1)
+
+							if elseStart ~= -1 then
+								chunk ..= indent .. "else\n"
+								chunk ..= decompileChunk(elseStart, ifEnd, lvl + 1)
+								pc = ifEnd
+							else
+								pc = target
+							end
+							
+							chunk ..= indent .. "end\n"
+							continue
+						end
+
+						local line = indent
+						
+						if op == "MOVE" then
+							line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc)
+						elseif op == "LOADK" or op == "LOADKX" then
+							line ..= R_Write(regs[1], pc) .. " = " .. formatConstant(constants[data[1] + 1])
+						elseif op == "LOADN" then
+							line ..= R_Write(regs[1], pc) .. " = " .. data[1]
+						elseif op == "LOADB" then
+							line ..= R_Write(regs[1], pc) .. " = " .. tostring(toBoolean(data[1]))
+							if data[2] ~= 0 then pc = pc + data[2] end
+						elseif op == "LOADNIL" then
+							line ..= R_Write(regs[1], pc) .. " = nil"
+						elseif op == "GETGLOBAL" then
+							local gName = tostring(constants[data[1] + 1].value)
+							if LIST_USED_GLOBALS and isValidGlobal(gName) then table.insert(usedGlobals, gName) end
+							line ..= R_Write(regs[1], pc) .. " = " .. gName
+						elseif op == "SETGLOBAL" then
+							line ..= tostring(constants[data[1] + 1].value) .. " = " .. R_Read(regs[1], pc)
+						elseif op == "GETUPVAL" then
+							line ..= R_Write(regs[1], pc) .. " = " .. formatUpval(data[1])
+						elseif op == "SETUPVAL" then
+							line ..= formatUpval(data[1]) .. " = " .. R_Read(regs[1], pc)
+						elseif op == "GETIMPORT" then
+							local imp = tostring(constants[data[1] + 1].value)
+							line ..= R_Write(regs[1], pc) .. " = " .. imp
+						
+						elseif op == "NEWTABLE" then
+							line ..= R_Write(regs[1], pc) .. " = {}"
+						elseif op == "DUPTABLE" then
+							local tConst = constants[data[1] + 1].value
+							line ..= R_Write(regs[1], pc) .. " = { --[[ DUPTABLE size: ".. tConst.size .." ]] }"
+						elseif op == "SETLIST" then
+							local base = regs[1]
+							local src = regs[2]
+							local startIdx = data[1]
+							local count = data[2]
+							line = ""
+							if count == 0 then
+								chunk ..= indent .. R_Read(base, pc) .. " = { ... } -- SETLIST MULTRET todo\n"
+							else
+								for k = 0, count - 2 do -- count includes base
+									chunk ..= indent .. R_Read(base, pc) .. "[" .. (startIdx + k) .. "] = " .. R_Read(src + k, pc) .. "\n"
+								end
+							end
+							
+						elseif op == "GETTABLEKS" then
+							line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. "." .. tostring(constants[data[2] + 1].value)
+						elseif op == "SETTABLEKS" then
+							line ..= R_Read(regs[2], pc) .. "." .. tostring(constants[data[2] + 1].value) .. " = " .. R_Read(regs[1], pc)
+						elseif op == "GETTABLE" then
+							line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. "[" .. R_Read(regs[3], pc) .. "]"
+						elseif op == "SETTABLE" then
+							line ..= R_Read(regs[2], pc) .. "[" .. R_Read(regs[3], pc) .. "] = " .. R_Read(regs[1], pc)
+
+                        elseif op == "IDIV" then 
+                            line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. " // " .. R_Read(regs[3], pc)
+                        elseif op == "IDIVK" then 
+                            line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. " // " .. formatConstant(constants[data[1] + 1])						
+
+                        elseif op == "SUBRK" then 
+                            line ..= R_Write(regs[1], pc) .. " = " .. formatConstant(constants[data[1] + 1]) .. " - " .. R_Read(regs[2], pc)
+                        elseif op == "DIVRK" then 
+                            line ..= R_Write(regs[1], pc) .. " = " .. formatConstant(constants[data[1] + 1]) .. " / " .. R_Read(regs[2], pc)
+
+                        elseif string.find(op, "FASTCALL") then
+                            line = ""
+
+						elseif op == "ADD" then line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. " + " .. R_Read(regs[3], pc)
+						elseif op == "SUB" then line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. " - " .. R_Read(regs[3], pc)
+						elseif op == "MUL" then line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. " * " .. R_Read(regs[3], pc)
+						elseif op == "DIV" then line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. " / " .. R_Read(regs[3], pc)
+						elseif op == "POW" then line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. " ^ " .. R_Read(regs[3], pc)
+						elseif op == "MOD" then line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. " % " .. R_Read(regs[3], pc)
+						
+						elseif op == "ADDK" then line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. " + " .. formatConstant(constants[data[1] + 1])
+						elseif op == "SUBK" then line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. " - " .. formatConstant(constants[data[1] + 1])
+						elseif op == "MULK" then line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. " * " .. formatConstant(constants[data[1] + 1])
+						elseif op == "DIVK" then line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. " / " .. formatConstant(constants[data[1] + 1])
+						elseif op == "MODK" then line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. " % " .. formatConstant(constants[data[1] + 1])
+						elseif op == "POWK" then line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. " ^ " .. formatConstant(constants[data[1] + 1])
+
+						elseif op == "NOT" then line ..= R_Write(regs[1], pc) .. " = not " .. R_Read(regs[2], pc)
+						elseif op == "MINUS" then line ..= R_Write(regs[1], pc) .. " = -" .. R_Read(regs[2], pc)
+						elseif op == "LENGTH" then line ..= R_Write(regs[1], pc) .. " = #" .. R_Read(regs[2], pc)
+						elseif op == "AND" then line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. " and " .. R_Read(regs[3], pc)
+						elseif op == "OR" then line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. " or " .. R_Read(regs[3], pc)
+						elseif op == "ANDK" then line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. " and " .. formatConstant(constants[data[1] + 1])
+						elseif op == "ORK" then line ..= R_Write(regs[1], pc) .. " = " .. R_Read(regs[2], pc) .. " or " .. formatConstant(constants[data[1] + 1])
+
+						elseif op == "CONCAT" then
+							local s = ""
+							for k = regs[2], regs[3] do
+								s = s .. R_Read(k, pc) .. (k < regs[3] and " .. " or "")
+							end
+							line ..= R_Write(regs[1], pc) .. " = " .. s
+
+						elseif op == "NEWCLOSURE" or op == "DUPCLOSURE" then
+							local protoIndex
+							if op == "NEWCLOSURE" then
+								protoIndex = data[1] + 1
+							else
+								protoIndex = constants[data[1] + 1].value
+							end
+							
+							local nextProto = (op == "NEWCLOSURE") and innerProtos[protoIndex] or protoTable[protoIndex - 1]
+							
+							local params = ""
+							if nextProto.numParams > 0 then
+								for p = 1, nextProto.numParams do
+									params = params .. "p" .. (totalParameters + p) .. (p < nextProto.numParams and ", " or "")
+								end
+							end
+							if nextProto.isVarArg then
+								params = params .. (nextProto.numParams > 0 and ", ..." or "...")
+							end
+
+							line ..= R_Write(regs[1], pc) .. " = function(" .. params .. ")\n"
+							line ..= decompileProto(nextProto.id, lvl + 1)
+							line ..= indent .. "end"
+
+						elseif op == "NAMECALL" then
+							line = ""
+						elseif op == "CALL" then
+							local base = regs[1]
+							local nArgs = data[1] - 1
+							local nRet = data[2] - 1
+							
+							local isMethod = false
+							local methodName = ""
+							if pc > 1 and actions[pc-1].opCode.name == "NAMECALL" then
+								isMethod = true
+								methodName = tostring(constants[actions[pc-1].extraData[2] + 1].value)
+							end
+
+							local callStr = ""
+							if isMethod then
+								callStr = R_Read(base, pc) .. ":" .. methodName .. "("
+								for k = 2, nArgs do
+									callStr ..= R_Read(base + k, pc) .. (k < nArgs and ", " or "")
+								end
+							else
+								callStr = R_Read(base, pc) .. "("
+								for k = 1, nArgs do
+									callStr ..= R_Read(base + k, pc) .. (k < nArgs and ", " or "")
+								end
+							end
+
+							if nArgs == -1 then callStr ..= "..." end
+							callStr ..= ")"
+							
+							if nRet == 0 then
+								line ..= callStr
+							else
+								local rets = ""
+								for k = 0, (nRet > 0 and nRet - 1 or 0) do
+									rets ..= R_Write(base + k, pc) .. (k < (nRet-1) and ", " or "")
+								end
+								if nRet == -1 then rets = "..." end
+								line ..= rets .. " = " .. callStr
+							end
+							
+						elseif op == "RETURN" then
+							line ..= "return "
+							local nRet = data[1] - 2
+							if nRet == -2 then -- MULTRET
+								line ..= R_Read(regs[1], pc) .. ", ..."
+							elseif nRet > -1 then
+								for k = 0, nRet do
+									line ..= R_Read(regs[1] + k, pc) .. (k < nRet and ", " or "")
+								end
+							end
+						
+						elseif op == "FORNPREP" then
+							local jumpTo = pc + data[1] + 1
+							local idx = regs[3]
+							local limit = regs[1]
+							local step = regs[2]
+							line ..= "for " .. R_Write(idx, pc) .. " = " .. R_Read(idx, pc) .. ", " .. R_Read(limit, pc) .. ", " .. R_Read(step, pc) .. " do"
+							chunk ..= line .. "\n"
+							chunk ..= decompileChunk(pc + 1, jumpTo - 1, lvl + 1)
+							chunk ..= indent .. "end\n"
+							pc = jumpTo
+							continue 
+						elseif op == "FORNLOOP" then
+							line = ""
+						
+						elseif op == "FORGPREP" or op == "FORGPREP_NEXT" or op == "FORGPREP_INEXT" then
+							local jumpTo = pc + data[1] + 1
+							local gen = regs[1]
+							line ..= "for " .. R_Write(gen + 3, pc) .. ", " .. R_Write(gen + 4, pc) .. " in " .. ((op == "FORGPREP_INEXT") and "ipairs" or "pairs/next") .. "(" .. R_Read(gen, pc) .. ") do"
+							
+							chunk ..= line .. "\n"
+							chunk ..= decompileChunk(pc + 1, jumpTo - 1, lvl + 1)
+							chunk ..= indent .. "end\n"
+							pc = jumpTo
+							continue
+						elseif op == "FORGLOOP" then
+							line = ""
+
+						elseif op == "JUMP" or op == "JUMPBACK" or op == "JUMPX" then
+							 if data[1] > 0 then
+								-- forward jump, maybe break or just skip?
+								line ..= "-- jump to " .. (pc + data[1] + 1)
+							 else
+								line ..= "-- jump back " .. (pc + data[1] + 1)
+							 end
+						elseif op == "BREAK" then
+							line ..= "break"
+						else
+							line ..= "-- " .. op
+						end
+						
+						if line ~= indent and line ~= "" then
+							chunk ..= line .. "\n"
+						end
+						
+						pc = pc + 1
+					end
+					return chunk
+				end
+
+				protoStr ..= decompileChunk(1, #actions + 1, indentLevel)
+				return protoStr
+			end
+			
+			result ..= "\n"
+			local mainProto = protoTable[mainProtoId]
+			result ..= decompileProto(mainProtoId, 0)
 			finalResult = processResult(result)
 		end
 
