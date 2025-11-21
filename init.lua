@@ -8,7 +8,7 @@ local ENABLED_REMARKS = {
 ------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 local DECOMPILER_TIMEOUT = 2 -- seconds
 local READER_FLOAT_PRECISION = 7 -- up to 99
-local DECOMPILER_MODE = "disasm" -- disasm/optdec
+local DECOMPILER_MODE = "optdec" -- disasm/optdec
 local SHOW_DEBUG_INFORMATION = true -- show trivial function and array allocation details
 local SHOW_INSTRUCTION_LINES = true -- show lines as they are in the source code
 local SHOW_OPERATION_NAMES = true
@@ -228,7 +228,7 @@ local function Decompile(bytecode)
 										type = localType,
 										register = localRegister,
 										startPC = localStartPC,
-										--endPC = localEndPC -- unused in the disassembler
+										endPC = localEndPC -- unused in the disassembler
 									}
 									typedLocals[i] = info
 								end
@@ -417,8 +417,8 @@ local function Decompile(bytecode)
 
 						for i = 1, totalDebugLocals do
 							local localName = stringTable[reader:nextVarInt()]
-							local localStartPC = reader:nextVarInt()
-							local localEndPC = reader:nextVarInt()
+							local localStartPC = reader:nextVarInt() + 1 -- PC is 1-based in our actions
+							local localEndPC = reader:nextVarInt() + localStartPC - 1 -- Make it 1-based
 							local localRegister = reader:nextByte()
 
 							-- debug info on the local at index `i`
@@ -1826,14 +1826,421 @@ local function Decompile(bytecode)
 			writeActions(registerActions[mainProtoId])
 
 			finalResult = processResult(result)
-		else -- assume optdec - optimized decompiler
+		else -- optdec
 			local result = ""
-			-- remove temporary registers and some optimization passes
-			local function optimize(code)
-				result = code
+			
+			local function getIndent(level)
+				return string.rep("    ", level)
 			end
-			optimize("-- one day..")
 
+			local function formatConstant(k)
+				if not k then return "nil" end
+				if k.type == LuauBytecodeTag.LBC_CONSTANT_VECTOR then
+					return string.format("Vector3.new(%g, %g, %g)", k.value.x, k.value.y, k.value.z)
+				elseif k.type == LuauBytecodeTag.LBC_CONSTANT_STRING then
+					return "\"" .. toEscapedString(k.value) .. "\""
+				elseif k.type == LuauBytecodeTag.LBC_CONSTANT_BOOLEAN then
+					return tostring(k.value)
+				elseif k.type == LuauBytecodeTag.LBC_CONSTANT_NIL then
+					return "nil"
+				elseif type(k.value) == "string" then
+					return "\"" .. toEscapedString(k.value) .. "\""
+				else
+					return tostring(k.value)
+				end
+			end
+			
+			local function decompileProto(protoId, indentLevel)
+				local protoActions = registerActions[protoId]
+				local proto = protoActions.proto
+				local actions = protoActions.actions
+				local constants = proto.constants
+				local innerProtos = proto.innerProtos
+				local captures = proto.captures
+				
+				local outputLines = {}
+				local function emit(lvl, str)
+					table.insert(outputLines, getIndent(lvl) .. str)
+				end
+
+				local declaredLocals = {} -- [name] = true
+				local variableNames = {} -- [regIndex] = "name"
+				
+				local params = {}
+				if proto.numParams > 0 then
+					for i = 1, proto.numParams do
+						local pName = "p" .. (totalParameters + i)
+						variableNames[i - 1] = pName
+						declaredLocals[pName] = true
+						table.insert(params, pName)
+					end
+				end
+				if proto.isVarArg then
+					table.insert(params, "...")
+				end
+
+				local function R(reg)
+					if not variableNames[reg] then
+						local vName = "v" .. reg
+						variableNames[reg] = vName
+					end
+					return variableNames[reg]
+				end
+
+				local function R_Def(reg)
+					local name = R(reg)
+					if not declaredLocals[name] then
+						declaredLocals[name] = true
+						return "local " .. name
+					end
+					return name
+				end
+				
+				local function U(idx)
+					if proto.debugUpvalues and proto.debugUpvalues[idx+1] then
+						return proto.debugUpvalues[idx+1].name
+					end
+					return "upval" .. idx
+				end
+
+				local labels = {} -- [pc] = true
+				local loops = {} -- [startPC] = endPC
+				
+				for i, action in ipairs(actions) do
+					local op = action.opCode.name
+					if string.find(op, "JUMP") then
+						local offset = action.extraData[1]
+						local target = i + offset + 1
+						labels[target] = true
+						
+						if offset < 0 then
+							loops[target] = i 
+						end
+					end
+				end
+
+				local pc = 1
+				local limit = #actions
+				local skipTo = 0
+
+				local function processChunk(startPC, endPC, lvl)
+					local i = startPC
+					while i <= endPC do
+						if i < skipTo then i = i + 1; continue end
+						
+						local action = actions[i]
+						local op = action.opCode.name
+						local regs = action.usedRegisters or {}
+						local data = action.extraData or {}
+
+						if loops[i] and loops[i] > i then
+							emit(lvl, "while true do")
+							processChunk(i + 1, loops[i] - 1, lvl + 1)
+							emit(lvl, "end")
+							if actions[loops[i]].opCode.name == "JUMPBACK" then
+								emit(lvl, "break -- (loop detected)")
+							end
+							i = loops[i] + 1
+							continue
+						end
+
+						local lineStr = ""
+
+						if op == "MOVE" then
+							lineStr = R_Def(regs[1]) .. " = " .. R(regs[2])
+						
+						elseif op == "LOADK" or op == "LOADKX" then
+							lineStr = R_Def(regs[1]) .. " = " .. formatConstant(constants[data[1] + 1])
+						
+						elseif op == "LOADN" then
+							lineStr = R_Def(regs[1]) .. " = " .. tostring(data[1])
+						
+						elseif op == "LOADB" then
+							lineStr = R_Def(regs[1]) .. " = " .. tostring(toBoolean(data[1]))
+							if data[2] ~= 0 then 
+								lineStr = lineStr .. " -- +JUMP " .. data[2] 
+							end
+
+						elseif op == "LOADNIL" then
+							lineStr = R_Def(regs[1]) .. " = nil"
+
+						elseif op == "GETGLOBAL" then
+							local gName = tostring(constants[data[1] + 1].value)
+							if LIST_USED_GLOBALS and isValidGlobal(gName) then table.insert(usedGlobals, gName) end
+							lineStr = R_Def(regs[1]) .. " = " .. gName
+
+						elseif op == "SETGLOBAL" then
+							local gName = tostring(constants[data[1] + 1].value)
+							if LIST_USED_GLOBALS and isValidGlobal(gName) then table.insert(usedGlobals, gName) end
+							lineStr = gName .. " = " .. R(regs[1])
+
+						elseif op == "GETUPVAL" then
+							lineStr = R_Def(regs[1]) .. " = " .. U(data[1])
+
+						elseif op == "SETUPVAL" then
+							lineStr = U(data[1]) .. " = " .. R(regs[1])
+
+						elseif op == "GETIMPORT" then
+							local count = bit32.rshift(data[2], 30)
+							local id0 = bit32.band(bit32.rshift(data[2], 20), 0x3FF)
+							local id1 = bit32.band(bit32.rshift(data[2], 10), 0x3FF)
+							local id2 = bit32.band(data[2], 0x3FF)
+							
+							local impStr = ""
+							if count == 1 then impStr = tostring(constants[id0+1].value)
+							elseif count == 2 then impStr = tostring(constants[id0+1].value) .. "." .. tostring(constants[id1+1].value)
+							elseif count == 3 then impStr = tostring(constants[id0+1].value) .. "." .. tostring(constants[id1+1].value) .. "." .. tostring(constants[id2+1].value)
+							end
+							
+							lineStr = R_Def(regs[1]) .. " = " .. impStr
+
+						elseif op == "NEWTABLE" then
+							lineStr = R_Def(regs[1]) .. " = {}"
+
+						elseif op == "DUPTABLE" then
+							local tConst = constants[data[1] + 1].value
+							local keys = tConst.keys
+							local content = ""
+							for kIdx, kId in ipairs(keys) do
+								content = content .. formatConstant(constants[kId]) .. " = nil"
+								if kIdx < #keys then content = content .. ", " end
+							end
+							lineStr = R_Def(regs[1]) .. " = {" .. content .. "} -- DUPTABLE"
+
+						elseif op == "GETTABLEKS" then
+							lineStr = R_Def(regs[1]) .. " = " .. R(regs[2]) .. "." .. tostring(constants[data[2] + 1].value)
+
+						elseif op == "SETTABLEKS" then
+							lineStr = R(regs[2]) .. "." .. tostring(constants[data[2] + 1].value) .. " = " .. R(regs[1])
+
+						elseif op == "GETTABLE" then
+							lineStr = R_Def(regs[1]) .. " = " .. R(regs[2]) .. "[" .. R(regs[3]) .. "]"
+
+						elseif op == "SETTABLE" then
+							lineStr = R(regs[2]) .. "[" .. R(regs[3]) .. "] = " .. R(regs[1])
+						
+						elseif op == "LENGTH" then lineStr = R_Def(regs[1]) .. " = #" .. R(regs[2])
+						
+						elseif op == "AND" then 
+							lineStr = R_Def(regs[1]) .. " = " .. R(regs[2]) .. " and " .. R(regs[3])
+						elseif op == "OR" then 
+							lineStr = R_Def(regs[1]) .. " = " .. R(regs[2]) .. " or " .. R(regs[3])
+						elseif op == "ANDK" then 
+							lineStr = R_Def(regs[1]) .. " = " .. R(regs[2]) .. " and " .. formatConstant(constants[data[1] + 1])
+						elseif op == "ORK" then 
+							lineStr = R_Def(regs[1]) .. " = " .. R(regs[2]) .. " or " .. formatConstant(constants[data[1] + 1])
+						
+						elseif op == "SETLIST" then
+							local tableReg = R(regs[1])
+							local sourceReg = regs[2]
+							local startIndex = data[1]
+							local count = data[2]
+							
+							if count == 0 then
+								emit(lvl, "-- SETLIST variable size on " .. tableReg)
+							else
+								for j = 1, count do
+									local valReg = R(sourceReg + j - 1)
+									emit(lvl, tableReg .. "[" .. (startIndex + j - 1) .. "] = " .. valReg)
+								end
+							end
+							lineStr = nil 
+
+						elseif op == "GETVARARGS" then
+							local count = data[1] - 1
+							if count == -1 then
+								lineStr = R_Def(regs[1]) .. " = ..."
+							else
+								local vars = ""
+								for k = 0, count - 1 do
+									local regName = (k == 0 and R_Def(regs[1] + k) or R(regs[1] + k))
+									vars = vars .. regName
+									if k < count - 1 then vars = vars .. ", " end
+								end
+								lineStr = vars .. " = ..."
+							end
+
+						elseif op == "ADD" then lineStr = R_Def(regs[1]) .. " = " .. R(regs[2]) .. " + " .. R(regs[3])
+						elseif op == "SUB" then lineStr = R_Def(regs[1]) .. " = " .. R(regs[2]) .. " - " .. R(regs[3])
+						elseif op == "MUL" then lineStr = R_Def(regs[1]) .. " = " .. R(regs[2]) .. " * " .. R(regs[3])
+						elseif op == "DIV" then lineStr = R_Def(regs[1]) .. " = " .. R(regs[2]) .. " / " .. R(regs[3])
+						elseif op == "MOD" then lineStr = R_Def(regs[1]) .. " = " .. R(regs[2]) .. " % " .. R(regs[3])
+						elseif op == "POW" then lineStr = R_Def(regs[1]) .. " = " .. R(regs[2]) .. " ^ " .. R(regs[3])
+						
+						elseif op == "ADDK" then lineStr = R_Def(regs[1]) .. " = " .. R(regs[2]) .. " + " .. formatConstant(constants[data[1] + 1])
+						elseif op == "SUBK" then lineStr = R_Def(regs[1]) .. " = " .. R(regs[2]) .. " - " .. formatConstant(constants[data[1] + 1])
+						elseif op == "MULK" then lineStr = R_Def(regs[1]) .. " = " .. R(regs[2]) .. " * " .. formatConstant(constants[data[1] + 1])
+						elseif op == "DIVK" then lineStr = R_Def(regs[1]) .. " = " .. R(regs[2]) .. " / " .. formatConstant(constants[data[1] + 1])
+						elseif op == "MODK" then lineStr = R_Def(regs[1]) .. " = " .. R(regs[2]) .. " % " .. formatConstant(constants[data[1] + 1])
+						elseif op == "POWK" then lineStr = R_Def(regs[1]) .. " = " .. R(regs[2]) .. " ^ " .. formatConstant(constants[data[1] + 1])
+
+						elseif op == "NOT" then lineStr = R_Def(regs[1]) .. " = not " .. R(regs[2])
+						elseif op == "MINUS" then lineStr = R_Def(regs[1]) .. " = -" .. R(regs[2])
+						elseif op == "LENGTH" then lineStr = R_Def(regs[1]) .. " = #" .. R(regs[2])
+						
+						elseif op == "CONCAT" then
+							local cStr = ""
+							for k = regs[2], regs[3] do
+								cStr = cStr .. R(k) .. (k < regs[3] and " .. " or "")
+							end
+							lineStr = R_Def(regs[1]) .. " = " .. cStr
+
+						elseif op == "NEWCLOSURE" or op == "DUPCLOSURE" then
+							local pIdx = (op == "NEWCLOSURE") and (data[1] + 1) or (constants[data[1] + 1].value)
+							local nextProto = (op == "NEWCLOSURE") and innerProtos[pIdx] or protoTable[pIdx - 1]
+							
+							emit(lvl, R_Def(regs[1]) .. " = " .. decompileProto(nextProto.id, lvl + 1))
+							lineStr = nil
+
+						elseif op == "NAMECALL" then
+							local methodConst = constants[data[2] + 1]
+							actions[i+1].nameCallMethod = tostring(methodConst.value)
+							lineStr = nil
+
+						elseif op == "CALL" then
+							local base = regs[1]
+							local nArgs = data[1] - 1
+							local nRet = data[2] - 1
+							
+							local callStr = ""
+							local startArg = 1
+							
+							if action.nameCallMethod then
+								callStr = R(base) .. ":" .. action.nameCallMethod .. "("
+								startArg = 2
+							else
+								callStr = R(base) .. "("
+							end
+
+							if nArgs == -1 then
+								callStr = callStr .. "..."
+							elseif nArgs > 0 then
+								for k = startArg, nArgs do
+									callStr = callStr .. R(base + k)
+									if k < nArgs then callStr = callStr .. ", " end
+								end
+							end
+							callStr = callStr .. ")"
+
+							if nRet == 0 then
+								lineStr = callStr
+							elseif nRet == -1 then
+								lineStr = R_Def(base) .. ", ... = " .. callStr
+							else
+								local retVars = ""
+								for k = 0, nRet - 1 do
+									retVars = retVars .. (k == 0 and R_Def(base + k) or R(base + k))
+									if k < nRet - 1 then retVars = retVars .. ", " end
+								end
+								lineStr = retVars .. " = " .. callStr
+							end
+
+						elseif op == "RETURN" then
+							local nRet = data[1] - 2
+							local retStr = "return"
+							if nRet == -2 then
+								retStr = retStr .. " " .. R(regs[1]) .. ", ..."
+							elseif nRet > -1 then
+								if nRet > 0 then retStr = retStr .. " " end
+								for k = 0, nRet do
+									retStr = retStr .. R(regs[1] + k)
+									if k < nRet then retStr = retStr .. ", " end
+								end
+							end
+							lineStr = retStr
+
+						elseif string.find(op, "JUMPIF") or string.find(op, "JUMPXEQ") then
+							local offset = data[1]
+							local target = i + offset + 1
+							
+							local cond = ""
+							if op == "JUMPIF" then cond = "not " .. R(regs[1])
+							elseif op == "JUMPIFNOT" then cond = R(regs[1])
+							elseif op == "JUMPIFEQ" then cond = R(regs[1]) .. " ~= " .. R(regs[2])
+							elseif op == "JUMPIFNOTEQ" then cond = R(regs[1]) .. " == " .. R(regs[2])
+							elseif op == "JUMPIFLE" then cond = R(regs[1]) .. " > " .. R(regs[2])
+							elseif op == "JUMPIFLT" then cond = R(regs[1]) .. " >= " .. R(regs[2])
+							elseif op == "JUMPIFNOTLE" then cond = R(regs[1]) .. " <= " .. R(regs[2])
+							elseif op == "JUMPIFNOTLT" then cond = R(regs[1]) .. " < " .. R(regs[2])
+							elseif string.find(op, "JUMPX") then
+								local aux = data[2]
+								local isNot = bit32.rshift(aux, 31) == 0
+								local val = "nil"
+								if op == "JUMPXEQKN" or op == "JUMPXEQKS" then val = formatConstant(constants[bit32.band(aux, 0xFFFFFF) + 1])
+								elseif op == "JUMPXEQKB" then val = tostring(toBoolean(bit32.band(aux, 1)))
+								end
+								cond = R(regs[1]) .. (isNot and " == " or " ~= ") .. val
+							end
+
+							local preTargetIdx = target - 1
+							local elseTarget = nil
+							if preTargetIdx > i and actions[preTargetIdx].opCode.name == "JUMP" then
+								elseTarget = preTargetIdx + actions[preTargetIdx].extraData[1] + 1
+							end
+
+							emit(lvl, "if " .. cond .. " then")
+							
+							if elseTarget then
+								processChunk(i + 1, preTargetIdx - 1, lvl + 1)
+								emit(lvl, "else")
+								processChunk(target, elseTarget - 1, lvl + 1)
+								emit(lvl, "end")
+								
+								i = elseTarget
+								continue 
+							else
+								processChunk(i + 1, target - 1, lvl + 1)
+								emit(lvl, "end")
+								
+								i = target
+								continue
+							end
+
+						elseif op == "FORNPREP" then
+							local target = i + data[1] + 1
+							local idx = regs[3]
+							emit(lvl, "for " .. R_Def(idx) .. " = " .. R(regs[1]) .. ", " .. R(regs[2]) .. ", " .. R(regs[3]) .. " do")
+							processChunk(i + 1, target - 1, lvl + 1)
+							emit(lvl, "end")
+							i = target
+							continue
+						
+						elseif op == "FORGPREP" or op == "FORGPREP_NEXT" or op == "FORGPREP_INEXT" then
+							local target = i + data[1] + 1
+							local func = (op == "FORGPREP_INEXT" and "ipairs") or (op == "FORGPREP_NEXT" and "pairs") or "pairs"
+							
+							local vars = R_Def(regs[1]+3) .. ", " .. R_Def(regs[1]+4)
+							if op == "FORGPREP" then vars = "..." end
+
+							emit(lvl, "for " .. vars .. " in " .. func .. "(" .. R(regs[1]) .. ") do")
+							processChunk(i + 1, target - 1, lvl + 1)
+							emit(lvl, "end")
+							i = target
+							continue
+
+						elseif op == "JUMP" then
+							if data[1] > 0 then
+								lineStr = "-- goto " .. (i + data[1] + 1)
+							end
+						end
+
+						if lineStr and lineStr ~= "" then
+							emit(lvl, lineStr)
+						end
+						
+						i = i + 1
+					end
+				end
+
+				processChunk(1, #actions, indentLevel)
+				
+				local resultStr = "function(" .. table.concat(params, ", ") .. ")\n"
+				resultStr = resultStr .. table.concat(outputLines, "\n") .. "\n"
+				resultStr = resultStr .. getIndent(indentLevel) .. "end"
+				return resultStr
+			end
+			
+			result = result .. decompileProto(mainProtoId, 0)
 			finalResult = processResult(result)
 		end
 
