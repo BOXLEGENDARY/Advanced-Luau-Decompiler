@@ -761,6 +761,7 @@ local function Decompile(bytecode)
 			finalResult = attachGlobals(finalResult)
 			
 			return finalResult
+		end
 			
 		if DECOMPILER_MODE == "disasm" then -- disassembler
 			local result = ""
