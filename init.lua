@@ -5,7 +5,6 @@ local ENABLED_REMARKS = {
 	COLD_REMARK = false,
 	INLINE_REMARK = false -- currently unused
 }
-------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 local DECOMPILER_TIMEOUT = 2 -- seconds
 local READER_FLOAT_PRECISION = 7 -- up to 99
 local DECOMPILER_MODE = "disasm" -- disasm/optdec
@@ -19,7 +18,6 @@ local LIST_USED_GLOBALS = true -- list all (non-Roblox!!) globals used in the sc
 local RETURN_ELAPSED_TIME = true -- return time it took to finish processing the bytecode
 local DECODE_AS_BASE64 = false -- Decodes the bytecode as base64 if it's returned as such.
 local USE_IN_STUDIO = false -- Toggles Roblox Studio mode, which allows for this to be used in
-------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 -- For studio, put your bytecode here.
 local input = ``
@@ -35,26 +33,38 @@ else
 	LoadFromUrl = function(x)
 		local BASE_USER = "BOXLEGENDARY"
 		local BASE_BRANCH = "main"
-		local BASE_URL = "https://raw.githubusercontent.com/%s/Advanced-Luau-Decompiler/%s/%s.lua"
+		local EXTENSIONS = {".luau", ".lua"}
+		local BASE_URL = "https://raw.githubusercontent.com/%s/Advanced-Luau-Decompiler/%s/%s%s"
 
-		local loadSuccess, loadResult = pcall(function()
-			local formattedUrl = string.format(BASE_URL, BASE_USER, BASE_BRANCH, x)
-			return game:HttpGet(formattedUrl, true)
-		end)
+		local loadResult
+		local success = false
 
-		if not loadSuccess then
-			warn(`({math.random()}) MОDULE FАILЕD ТO LOАD FRОM URL: {loadResult}.`)
+		for _, ext in ipairs(EXTENSIONS) do
+			local pcallSuccess, pcallResult = pcall(function()
+				local formattedUrl = string.format(BASE_URL, BASE_USER, BASE_BRANCH, x, ext)
+				return game:HttpGet(formattedUrl, true)
+			end)
+
+			if pcallSuccess and pcallResult then
+				loadResult = pcallResult
+				success = true
+				break
+			end
+		end
+
+		if not success then
+			warn(`({math.random()}) MODULE {x} NOT FOUND (Tried .luau and .lua)`)
 			return
 		end
 
-		local success, result = pcall(loadstring, loadResult)
-		if not success then
-			warn(`({math.random()}) MОDULE FАILЕD ТO LOАDSТRING: {result}.`)
+		local loadSuccess, result = pcall(loadstring, loadResult)
+		if not loadSuccess then
+			warn(`({math.random()}) MODULE FAILED TO LOADSTRING: {result}`)
 			return
 		end
 
 		if type(result) ~= "function" then
-			warn(`MОDULE IS {tostring(result)} (function expected)`)
+			warn(`MODULE {x} IS {tostring(result)} (function expected)`)
 			return
 		end
 
@@ -1909,6 +1919,10 @@ if not USE_IN_STUDIO then
 			end
 		end
 		
+		if not isScriptValid() then
+		    error("This script type is not supported for decompilation", 2)
+		end
+		
 		local success, result = pcall(getscriptbytecode, script)
 		if not success or type(result) ~= "string" then
 			error(`Couldn't decompile bytecode: {tostring(result)}`, 2)
@@ -1917,13 +1931,14 @@ if not USE_IN_STUDIO then
 		
 		local decomped, elapsedTime
 		
-		if DECODE_AS_BASE64 then
-			local toDecode = buffer.fromstring(result)
-			local decoded = Base64.decode(toDecode)
-			decomped, elapsedTime = Decompile(result)
-		else
-			decomped, elapsedTime = Decompile(result)
-		end
+	    if DECODE_AS_BASE64 then
+	        local inputBuffer = buffer.fromstring(result)
+	        local decodedBuffer = Base64.Decode(inputBuffer)
+	        local decodedString = buffer.tostring(decodedBuffer)
+	        decomped, elapsedTime = Decompile(decodedString) -- ตรงนี้ถูกต้อง
+	    else
+	        decomped, elapsedTime = Decompile(result)
+	    end
 		
 		if RETURN_ELAPSED_TIME then
 			return decomped, elapsedTime
@@ -1933,9 +1948,10 @@ if not USE_IN_STUDIO then
 	end
 else
 	if DECODE_AS_BASE64 then
-		local toDecode = buffer.fromstring(input)
-		local Encoded = Base64.Encoded(toDecode)
-		local decomped, elapsedTime = Decompile(buffer.tostring(decoded))
+        local inputBuffer = buffer.fromstring(input)
+        local decodedBuffer = Base64.Decode(inputBuffer)
+        local decodedString = buffer.tostring(decodedBuffer)
+		local decomped, elapsedTime = Decompile(decodedString) 
 		warn("done decompiling:", elapsedTime or 0)
 		
 		-- Some scripts like Criminality's GunClient are thousands of lines long, and directly setting string properties
@@ -1946,10 +1962,10 @@ else
 		end)
 	else
 		local decomped, elapsedTime = Decompile(input)
-		warn("done decompiling:", elapsedTime or 0)
-		
-		game:GetService("ScriptEditorService"):UpdateSourceAsync(workspace["Disassembler"].LocalScript, function()
-			return decomped
-		end)
-	end
+        warn("done decompiling:", elapsedTime or 0)
+        
+        game:GetService("ScriptEditorService"):UpdateSourceAsync(workspace["Disassembler"].LocalScript, function()
+            return decomped
+        end)
+    end
 end
