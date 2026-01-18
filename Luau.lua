@@ -77,7 +77,7 @@ local BUILTIN_NAMES = {
 	[87] = "vector.min", [88] = "vector.max",
 	-- lerp
 	[89] = "math.lerp", [90] = "vector.lerp",
-	-- math checks (New in Bytecode.h)
+	-- math checks
 	[91] = "math.isnan", [92] = "math.isinf", [93] = "math.isfinite",
 }
 
