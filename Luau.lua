@@ -667,7 +667,7 @@ function Luau:INSN_C(insn)
 end
 
 -- AD encoding: one 8-bit value, one signed 16-bit value
-function Luau:INSN_D(insn) -- (0..32767)
+function Luau:INSN_D(insn) -- raw 16-bit (0..65535)
 	return bit32.rshift(insn, 16)
 end
 function Luau:INSN_sD(insn) -- (-32768..32767)
