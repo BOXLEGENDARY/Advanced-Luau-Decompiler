@@ -681,7 +681,7 @@ end
 
 -- E encoding: one signed 24-bit value
 function Luau:INSN_E(insn)
-	return bit32.rshift(insn, 8)
+	return bit32.arshift(bit32.lshift(insn, 8), 8)
 end
 
 -- Type to string for typeinfo
