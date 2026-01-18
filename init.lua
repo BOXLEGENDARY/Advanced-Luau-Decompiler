@@ -270,16 +270,22 @@ local function Decompile(bytecode)
 					elseif constType == LuauBytecodeTag.LBC_CONSTANT_IMPORT then
 						-- imports are globals from the environment
 						-- examples: math.random, print, coroutine.wrap
-
-						local id = reader:nextUInt32()
-
-						local indexCount = bit32.rshift(id, 30)
-
-						local cacheIndex1 = bit32.band(bit32.rshift(id, 20), 0x3FF)
-						local cacheIndex2 = bit32.band(bit32.rshift(id, 10), 0x3FF)
-						local cacheIndex3 = bit32.band(bit32.rshift(id, 0), 0x3FF)
-
-						local importTag = ""
+						
+					    local id = reader:nextUInt32()
+					    local indexCount = bit32.rshift(id, 30)
+					    local cacheIndex1 = bit32.band(bit32.rshift(id, 20), 0x3FF)
+					    local cacheIndex2 = bit32.band(bit32.rshift(id, 10), 0x3FF)
+					    local cacheIndex3 = bit32.band(bit32.rshift(id, 0), 0x3FF)
+					
+					    local importTag = ""
+					    if indexCount == 1 then
+					        importTag = tostring(proto.constants[cacheIndex1 + 1].value)
+					    elseif indexCount == 2 then
+					        importTag = tostring(proto.constants[cacheIndex1 + 1].value) .. "." .. tostring(proto.constants[cacheIndex2 + 1].value)
+					    elseif indexCount == 3 then
+					        importTag = tostring(proto.constants[cacheIndex1 + 1].value) .. "." .. tostring(proto.constants[cacheIndex2 + 1].value) .. "." .. tostring(proto.constants[cacheIndex3 + 1].value)
+					    end
+					    constValue = importTag
 
 						if indexCount == 1 then
 							local k1 = proto.constants[cacheIndex1 + 1]
@@ -685,6 +691,12 @@ local function Decompile(bytecode)
 						opCodeName == "DIVK" or opCodeName == "MODK" or opCodeName == "POWK"
 					then
 						registerAction({A, B}, {C})
+					elseif opCodeName == "IDIV" then 
+					    registerAction({A, B, C})
+					elseif opCodeName == "IDIVK" then
+					    registerAction({A, B}, {C})
+					elseif opCodeName == "JUMPX" then
+					    registerAction({}, {E})
 					elseif opCodeName == "AND" or opCodeName == "OR" then
 						registerAction({A, B, C})
 					elseif opCodeName == "ANDK" or opCodeName == "ORK" then
@@ -1754,31 +1766,16 @@ local function Decompile(bytecode)
 							local value = formatConstantValue(constants[extraData[1] + 1])
 
 							result ..= formatRegister(targetRegister) .." = ".. value .." / ".. formatRegister(sourceRegister)
-						elseif opCodeName == "IDIV" then -- floor division
-							local targetRegister = usedRegisters[1]
-							local sourceLeftRegister = usedRegisters[2]
-							local sourceRightRegister = usedRegisters[3]
+						elseif opCodeName == "IDIV" then
+						    result ..= formatRegister(usedRegisters[1]) .. " = " .. formatRegister(usedRegisters[2]) .. " // " .. formatRegister(usedRegisters[3])
+						elseif opCodeName == "IDIVK" then
+						    local value = formatConstantValue(constants[extraData[1] + 1])
+						    result ..= formatRegister(usedRegisters[1]) .. " = " .. formatRegister(usedRegisters[2]) .. " // " .. value
+						elseif string.find(opCodeName, "FASTCALL") then
+						    local bfid = extraData[1]
+						    local builtinName = Luau:GetBuiltinInfo(bfid) or "unknown"
 
-							result ..= formatRegister(targetRegister) .." = ".. formatRegister(sourceLeftRegister) .." // ".. formatRegister(sourceRightRegister)
-						elseif opCodeName == "IDIVK" then -- floor division with 1 constant argument
-							local targetRegister = usedRegisters[1]
-							local sourceRegister = usedRegisters[2]
-
-							local value = formatConstantValue(constants[extraData[1] + 1])
-
-							result ..= formatRegister(targetRegister) .." = ".. formatRegister(sourceRegister) .." // ".. value
-						elseif opCodeName == "FASTCALL" then -- reads info from the CALL instruction
-							local bfid = extraData[1] -- builtin function id
-							--local jumpOffset = extraData[2]
-
-							-- where for CALL resides
-							--local callIndex = i + jumpOffset
-
-							--local callAction = actions[callIndex]
-							--local callUsedRegisters = callAction.usedRegisters
-							--local callExtraData = callAction.extraData
-
-							result ..= "-- FASTCALL; ".. Luau:GetBuiltinInfo(bfid) .."()"
+						    result ..= "-- " .. opCodeName .. "; " .. builtinName .. "()"						
 						elseif opCodeName == "FASTCALL1" then -- 1 register argument
 							local sourceArgumentRegister = usedRegisters[1]
 
