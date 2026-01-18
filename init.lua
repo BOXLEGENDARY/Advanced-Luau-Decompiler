@@ -285,7 +285,6 @@ local function Decompile(bytecode)
 					    elseif indexCount == 3 then
 					        importTag = tostring(proto.constants[cacheIndex1 + 1].value) .. "." .. tostring(proto.constants[cacheIndex2 + 1].value) .. "." .. tostring(proto.constants[cacheIndex3 + 1].value)
 					    end
-					    constValue = importTag
 
 						if indexCount == 1 then
 							local k1 = proto.constants[cacheIndex1 + 1]
