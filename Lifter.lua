@@ -434,15 +434,21 @@ function Context:computeDominators()
         if idom[i] ~= semi[i] then idom[i] = idom[idom[i]] end
     end
 
-    local idomBlock = {}
-    for i = 1, time do
-        local bId = vertex[i]
-        if i == 1 then idomBlock[bId] = nil
-        else
-            local id = idom[i] or semi[i]
-            if id and id >= 1 then idomBlock[bId] = vertex[id] else idomBlock[bId] = nil end
-        end
-    end
+	local idomBlock = {}
+	for i = 1, time do
+	    local bId = vertex[i]
+	    if bId then
+	        if i == 1 then 
+	            idomBlock[bId] = nil
+	        else
+	            local id = idom[i] or semi[i]
+	            if id and id >= 1 and vertex[id] then
+	                idomBlock[bId] = vertex[id]
+	            else
+	                idomBlock[bId] = nil 
+	            end
+	        end
+	    end
 
     self.idom = idomBlock
     self.dominators = {}
