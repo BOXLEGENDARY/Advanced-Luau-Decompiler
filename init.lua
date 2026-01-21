@@ -7,7 +7,7 @@ local ENABLED_REMARKS = {
 }
 local DECOMPILER_TIMEOUT = 2 -- seconds
 local READER_FLOAT_PRECISION = 7 -- up to 99
-local DECOMPILER_MODE = "disasm" -- disasm/optdec
+local DECOMPILER_MODE = "optdec" -- disasm/optdec
 local SHOW_DEBUG_INFORMATION = true -- show trivial function and array allocation details
 local SHOW_INSTRUCTION_LINES = true -- show lines as they are in the source code
 local SHOW_OPERATION_NAMES = true
@@ -76,6 +76,8 @@ local Reader = LoadFromUrl("Reader")
 local Strings = LoadFromUrl("Strings")
 local Luau = LoadFromUrl("Luau")
 local Base64 = LoadFromUrl("Base64")
+local Lifter = LoadFromUrl("Lifter")
+Lifter.init(Luau, Implementations)
 
 local function LoadFlag(name)
 	local success, result = pcall(function()
@@ -1832,19 +1834,27 @@ local function Decompile(bytecode)
 			writeActions(registerActions[mainProtoId])
 
 			finalResult = processResult(result)
-		else -- assume optdec - optimized decompiler
-			local result = ""
-			-- remove temporary registers and some optimization passes
-			local function optimize(code)
-				result = code
-			end
-			optimize("-- one day..")
+        else -- assume optdec - optimized decompiler
+            local result = ""
 
-			finalResult = processResult(result)
-		end
+            local mainProto = protoTable[mainProtoId]
+            
+            local success, code = pcall(function()
+                return Lifter.decompile(mainProto, "main")
+            end)
+            
+            if success then
+                result = code
+            else
+                result = "-- Decompilation Error: " .. tostring(code)
+                warn(result)
+            end
 
-		return finalResult
-	end
+            finalResult = processResult(result)
+        end
+        
+        return finalResult
+    end
 
 	local function manager(proceed, issue)
 		if proceed then
