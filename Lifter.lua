@@ -893,8 +893,17 @@ function Lifter.decompile(proto, protoId)
 
         if handler then
             local auxVal = opInfo.aux and ctx.instructions[ctx.pc + 1] or nil
-            local result = handler(ctx, A, B or D, C, auxVal, sD)
-            skip = result or (opInfo.aux and 1 or 0)
+            
+            local success, result = pcall(function()
+                return handler(ctx, A, B or D, C, auxVal, sD)
+            end)
+
+            if success then
+                skip = result or (opInfo.aux and 1 or 0)
+            else
+                ctx:emit(string_format("-- [[ Decompile Error at PC %d (%s): %s ]]", ctx.pc, opInfo.name, tostring(result)))
+                skip = (opInfo.aux and 1 or 0)
+            end
         else
             ctx:emit(string_format("-- %s A:%d B:%d C:%d", opInfo.name, A, B or 0, C or 0))
         end
