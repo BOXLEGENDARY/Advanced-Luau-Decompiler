@@ -449,6 +449,7 @@ function Context:computeDominators()
 	            end
 	        end
 	    end
+	end
 
     self.idom = idomBlock
     self.dominators = {}
