@@ -76,8 +76,6 @@ local Reader = LoadFromUrl("Reader")
 local Strings = LoadFromUrl("Strings")
 local Luau = LoadFromUrl("Luau")
 local Base64 = LoadFromUrl("Base64")
-local Lifter = LoadFromUrl("Lifter")
-Lifter.init(Luau, Implementations)
 
 local function LoadFlag(name)
 	local success, result = pcall(function()
@@ -1834,27 +1832,19 @@ local function Decompile(bytecode)
 			writeActions(registerActions[mainProtoId])
 
 			finalResult = processResult(result)
-        else -- assume optdec - optimized decompiler
-            local result = ""
+		else -- assume optdec - optimized decompiler
+			local result = ""
+			-- remove temporary registers and some optimization passes
+			local function optimize(code)
+				result = code
+			end
+			optimize("-- one day..")
 
-            local mainProto = protoTable[mainProtoId]
-            
-            local success, code = pcall(function()
-                return Lifter.decompile(mainProto, "main")
-            end)
-            
-            if success then
-                result = code
-            else
-                result = "-- Decompilation Error: " .. tostring(code)
-                warn(result)
-            end
+			finalResult = processResult(result)
+		end
 
-            finalResult = processResult(result)
-        end
-        
-        return finalResult
-    end
+		return finalResult
+	end
 
 	local function manager(proceed, issue)
 		if proceed then
