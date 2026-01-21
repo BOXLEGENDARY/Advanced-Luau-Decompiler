@@ -331,7 +331,7 @@ function Context:computeDominators()
 
     local semi = make_array(N, 0)
     local idom = make_array(N, 0)
-    local parent = make_array(N, 0)
+    local parentBlock = make_array(N, 0)
     local vertex = make_array(N, 0)
     local ancestor = make_array(N, 0)
     local label = make_array(N, 0)
@@ -356,7 +356,7 @@ function Context:computeDominators()
             vertex[time] = node.id
             for _, succ in pairs(node.succ) do
                 if not visited[succ.id] then
-                    parent[succ.id] = node.id
+                    parentBlock[succ.id] = node.id
                     table_insert(stack, succ)
                 end
             end
@@ -382,7 +382,7 @@ function Context:computeDominators()
 
     for i = 2, time do
         local bId = vertex[i]
-        local pId = parent[bId] or 1
+        local pId = parentBlock[bId] or 1
         parent[i] = blockToIndex[pId]
     end
 
@@ -438,15 +438,11 @@ function Context:computeDominators()
 	for i = 1, time do
 	    local bId = vertex[i]
 	    if bId then
-	        if i == 1 then 
+	        if i == 1 then
 	            idomBlock[bId] = nil
 	        else
 	            local id = idom[i] or semi[i]
-	            if id and id >= 1 and vertex[id] then
-	                idomBlock[bId] = vertex[id]
-	            else
-	                idomBlock[bId] = nil 
-	            end
+	            idomBlock[bId] = vertex[id]
 	        end
 	    end
 	end
@@ -893,17 +889,8 @@ function Lifter.decompile(proto, protoId)
 
         if handler then
             local auxVal = opInfo.aux and ctx.instructions[ctx.pc + 1] or nil
-            
-            local success, result = pcall(function()
-                return handler(ctx, A, B or D, C, auxVal, sD)
-            end)
-
-            if success then
-                skip = result or (opInfo.aux and 1 or 0)
-            else
-                ctx:emit(string_format("-- [[ Decompile Error at PC %d (%s): %s ]]", ctx.pc, opInfo.name, tostring(result)))
-                skip = (opInfo.aux and 1 or 0)
-            end
+            local result = handler(ctx, A, B or D, C, auxVal, sD)
+            skip = result or (opInfo.aux and 1 or 0)
         else
             ctx:emit(string_format("-- %s A:%d B:%d C:%d", opInfo.name, A, B or 0, C or 0))
         end
