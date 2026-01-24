@@ -1935,7 +1935,7 @@ if not USE_IN_STUDIO then
 	        local inputBuffer = buffer.fromstring(result)
 	        local decodedBuffer = Base64.Decode(inputBuffer)
 	        local decodedString = buffer.tostring(decodedBuffer)
-	        decomped, elapsedTime = Decompile(decodedString) -- ตรงนี้ถูกต้อง
+	        decomped, elapsedTime = Decompile(decodedString)
 	    else
 	        decomped, elapsedTime = Decompile(result)
 	    end
