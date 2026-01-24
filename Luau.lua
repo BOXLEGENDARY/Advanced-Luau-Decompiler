@@ -2,7 +2,7 @@
 
 local CASE_MULTIPLIER = 227 -- 0xE3
 
--- Lookup table for Type strings
+-- lookup table for type strings
 local TYPE_NAMES = {
 	[0] = "nil",
 	[1] = "boolean",
@@ -17,8 +17,8 @@ local TYPE_NAMES = {
 	[15] = "any",
 }
 
--- Lookup table for Builtin Function names
--- Indices match LuauBuiltinFunction enum values
+-- lookup table for builtin function names
+-- indices match luaubuiltinfunction enum values
 local BUILTIN_NAMES = {
 	[0] = "none",
 	[1] = "assert",
@@ -47,7 +47,7 @@ local BUILTIN_NAMES = {
 	-- raw*
 	[49] = "rawset", [50] = "rawget", [51] = "rawequal",
 	-- table
-	[52] = "table.insert", [53] = "unpack", -- LBF_TABLE_UNPACK matches "unpack" in original
+	[52] = "table.insert", [53] = "unpack",
 	-- vector ctor
 	[54] = "Vector3.new",
 	-- bit32.count
@@ -450,17 +450,17 @@ local Luau = {
 		-- Enum entry for number of opcodes, not a valid opcode by itself!
 		{ ["name"] = "_COUNT", ["type"] = "none" }
 	},
-	-- Bytecode tags, used internally for bytecode encoded as a string
+	-- bytecode tags, used internally for bytecode encoded as a string
 	BytecodeTag = {
-		-- Bytecode version; runtime supports [MIN, MAX], compiler emits TARGET by default but may emit a higher version when flags are enabled
+		-- bytecode version; runtime supports [MIN, MAX], compiler emits TARGET by default but may emit a higher version when flags are enabled
 		LBC_VERSION_MIN = 3,
 		LBC_VERSION_MAX = 6,
 		LBC_VERSION_TARGET = 6,
-		-- Type encoding version
+		-- type encoding version
 		LBC_TYPE_VERSION_MIN = 1,
 		LBC_TYPE_VERSION_MAX = 3,
 		LBC_TYPE_VERSION_TARGET = 3,
-		-- Types of constant table entries
+		-- types of constant table entries
 		LBC_CONSTANT_NIL = 0,
 		LBC_CONSTANT_BOOLEAN = 1,
 		LBC_CONSTANT_NUMBER = 2,
@@ -470,7 +470,7 @@ local Luau = {
 		LBC_CONSTANT_CLOSURE = 6,
 		LBC_CONSTANT_VECTOR = 7
 	},
-	-- Type table tags
+	-- type table tags
 	BytecodeType = {
 		LBC_TYPE_NIL = 0,
 		LBC_TYPE_BOOLEAN = 1,
@@ -492,13 +492,13 @@ local Luau = {
 
 		LBC_TYPE_INVALID = 256
 	},
-	-- Capture type, used in LOP_CAPTURE
+	-- capture type, used in LOP_CAPTURE
 	CaptureType = {
 		LCT_VAL = 0,
 		LCT_REF = 1,
 		LCT_UPVAL = 2
 	},
-	-- Builtin function ids, used in LOP_FASTCALL
+	-- builtin function ids, used in LOP_FASTCALL
 	BuiltinFunction = {
 		LBF_NONE = 0,
 		LBF_ASSERT = 1,
@@ -649,8 +649,8 @@ local Luau = {
 	}
 }
 
--- Bytecode instruction header: it's always a 32-bit integer, with low byte (first byte in little endian) containing the opcode
--- Some instruction types require more data and have more 32-bit integers following the header
+-- bytecode instruction header: it's always a 32-bit integer, with low byte (first byte in little endian) containing the opcode
+-- some instruction types require more data and have more 32-bit integers following the header
 function Luau:INSN_OP(insn)
 	return bit32.band(insn, 0xFF)
 end
@@ -684,7 +684,7 @@ function Luau:INSN_E(insn)
 	return bit32.arshift(bit32.lshift(insn, 8), 8)
 end
 
--- Type to string for typeinfo
+-- type to string for typeinfo
 function Luau:GetBaseTypeString(type, checkOptional)
 	local LuauBytecodeType = Luau.BytecodeType
 	local tag = bit32.band(type, bit32.bnot(LuauBytecodeType.LBC_TYPE_OPTIONAL_BIT))
@@ -720,7 +720,7 @@ local function prepare(t)
 
 	local LuauOpCode = t.OpCode
 
-	-- Assign opcodes their case number
+	-- assign opcodes their case number
 	t.OpCode = reconstruct(LuauOpCode, function(self, i, v)
 		local case = bit32.band((i - 1)*CASE_MULTIPLIER, 0xFF)
 		self[case] = v
