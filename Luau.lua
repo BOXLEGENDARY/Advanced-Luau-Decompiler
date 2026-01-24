@@ -638,7 +638,7 @@ local Luau = {
 		LBF_MATH_ISINF = 92,
 		LBF_MATH_ISFINITE = 93,
 	},
-	-- Proto flag bitmask, stored in Proto::flags
+	-- proto flag bitmask, stored in proto::flags
 	ProtoFlag = {
 		-- used to tag main proto for modules with --!native
 		LPF_NATIVE_MODULE = bit32.lshift(1, 0),
