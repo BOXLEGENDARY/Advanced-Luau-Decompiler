@@ -280,40 +280,19 @@ local function Decompile(bytecode)
 					elseif constType == LuauBytecodeTag.LBC_CONSTANT_IMPORT then
 						-- imports are globals from the environment
 						-- examples: math.random, print, coroutine.wrap
-						
 					    local id = reader:nextUInt32()
+					    
 					    local indexCount = bit32.rshift(id, 30)
 					    local cacheIndex1 = bit32.band(bit32.rshift(id, 20), 0x3FF)
 					    local cacheIndex2 = bit32.band(bit32.rshift(id, 10), 0x3FF)
-					    local cacheIndex3 = bit32.band(bit32.rshift(id, 0), 0x3FF)
+					    local cacheIndex3 = bit32.band(id, 0x3FF)
 					
-					    local importTag = ""
-					    if indexCount == 1 then
-					        importTag = tostring(proto.constants[cacheIndex1 + 1].value)
-					    elseif indexCount == 2 then
-					        importTag = tostring(proto.constants[cacheIndex1 + 1].value) .. "." .. tostring(proto.constants[cacheIndex2 + 1].value)
-					    elseif indexCount == 3 then
-					        importTag = tostring(proto.constants[cacheIndex1 + 1].value) .. "." .. tostring(proto.constants[cacheIndex2 + 1].value) .. "." .. tostring(proto.constants[cacheIndex3 + 1].value)
-					    end
-
-						if indexCount == 1 then
-							local k1 = proto.constants[cacheIndex1 + 1]
-							importTag ..= tostring(k1.value)
-						elseif indexCount == 2 then
-							local k1 = proto.constants[cacheIndex1 + 1]
-							local k2 = proto.constants[cacheIndex2 + 1]
-							importTag ..= tostring(k1.value) .. "."
-							importTag ..= tostring(k2.value)
-						elseif indexCount == 3 then
-							local k1 = proto.constants[cacheIndex1 + 1]
-							local k2 = proto.constants[cacheIndex2 + 1]
-							local k3 = proto.constants[cacheIndex3 + 1]
-							importTag ..= tostring(k1.value) .. "."
-							importTag ..= tostring(k2.value) .. "."
-							importTag ..= tostring(k3.value)
-						end
-
-						constValue = importTag
+					    local path = {}
+					    if indexCount >= 1 then table.insert(path, stringTable[cacheIndex1 + 1]) end
+					    if indexCount >= 2 then table.insert(path, stringTable[cacheIndex2 + 1]) end
+					    if indexCount >= 3 then table.insert(path, stringTable[cacheIndex3 + 1]) end
+					
+					    constValue = table.concat(path, ".")
 					elseif constType == LuauBytecodeTag.LBC_CONSTANT_TABLE then
 						local sizeTable = reader:nextVarInt()
 						local tableKeys = {}
@@ -749,16 +728,15 @@ local function Decompile(bytecode)
 					elseif opCodeName == "FORGPREP" then
 						registerAction({A}, {sD})
 					elseif opCodeName == "GETVARARGS" then
-						if B ~= 0 then
-							local registers = {A}
-							-- i hope this works and it is not reg = 1
-							for reg = 0, B - 1 do
-								table.insert(registers, A + reg)
-							end
-							registerAction(registers, {B})
-						else
-							registerAction({A}, {B})
-						end
+					    if B ~= 0 then
+					        local registers = {}
+					        for reg = 0, B - 2 do
+					            table.insert(registers, A + reg)
+					        end
+					        registerAction(registers, {B})
+					    else
+					        registerAction({A}, {B}) 
+					    end
 					elseif opCodeName == "PREPVARARGS" then
 						registerAction({}, {A}, not SHOW_TRIVIAL_OPERATIONS)
 					elseif opCodeName == "LOADKX" then
@@ -1342,30 +1320,16 @@ local function Decompile(bytecode)
 							makeJumpMarker(endIndex)
 
 							result ..= "if ".. formatRegister(leftRegister) .." => ".. formatRegister(rightRegister) .." then -- goto #".. endIndex
-						elseif opCodeName == "JUMPIFLT" then -- may be wrong
-							local leftRegister = usedRegisters[1]
-							local rightRegister = usedRegisters[2]
-
-							local jumpOffset = extraData[1]
-
-							-- where the script will go if the condition is met
-							local endIndex = i + jumpOffset
-
-							makeJumpMarker(endIndex)
-
-							result ..= "if ".. formatRegister(leftRegister) .." > ".. formatRegister(rightRegister) .." then -- goto #".. endIndex
-						elseif opCodeName == "JUMPIFNOTEQ" then
-							local leftRegister = usedRegisters[1]
-							local rightRegister = usedRegisters[2]
-
-							local jumpOffset = extraData[1]
-
-							-- where the script will go if the condition is met
-							local endIndex = i + jumpOffset
-
-							makeJumpMarker(endIndex)
-
-							result ..= "if ".. formatRegister(leftRegister) .." ~= ".. formatRegister(rightRegister) .." then -- goto #".. endIndex
+						elseif opCodeName == "JUMPIFLT" then
+						    local left = usedRegisters[1] -- A
+						    local right = usedRegisters[2] -- AUX
+						    local offset = extraData[1] -- sD
+						    result ..= string.format("if %s < %s then -- goto #%d", formatRegister(left), formatRegister(right), i + offset)
+						elseif opCodeName == "JUMPIFLE" then
+						    local left = usedRegisters[1] -- A
+						    local right = usedRegisters[2] -- AUX
+						    local offset = extraData[1] -- sD
+						    result ..= string.format("if %s <= %s then -- goto #%d", formatRegister(left), formatRegister(right), i + offset)
 						elseif opCodeName == "JUMPIFNOTLE" then
 							local leftRegister = usedRegisters[1]
 							local rightRegister = usedRegisters[2]
@@ -1650,26 +1614,19 @@ local function Decompile(bytecode)
 
 							result ..= "for ".. variablesBody .." in ".. formatRegister(targetRegister) .." do -- end at #".. endIndex
 						elseif opCodeName == "GETVARARGS" then
-							local variableCount = extraData[1] - 1
-
-							local retBody = ""
-							if variableCount == -1 then -- MULTRET
-								-- i don't know about this
-								local targetRegister = usedRegisters[1]
-								retBody = formatRegister(targetRegister)
-							else
-								for i = 1, variableCount do
-									local register = usedRegisters[i]
-									retBody ..= formatRegister(register)
-
-									if i ~= variableCount then
-										retBody ..= ", "
-									end
-								end
-							end
-							retBody ..= " = ..."
-
-							result ..= retBody
+						    local targetBase = usedRegisters[1] -- A
+						    local bCount = extraData[1] -- B
+						    
+						    if bCount == 0 then
+						        result ..= formatRegister(targetBase) .. ", ... = ..."
+						    else
+						        local actualCount = bCount - 1
+						        local regs = {}
+						        for i = 0, actualCount - 1 do
+						            table.insert(regs, formatRegister(targetBase + i))
+						        end
+						        result ..= table.concat(regs, ", ") .. " = ..."
+						    end
 						elseif opCodeName == "PREPVARARGS" then
 							local numParams = extraData[1]
 
