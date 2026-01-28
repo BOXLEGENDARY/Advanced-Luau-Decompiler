@@ -905,23 +905,16 @@ local function Decompile(bytecode)
 					end
 					local function writeOperationBody()
 						local function formatRegister(register)
-							if register == nil then
-								return "v[ERROR_UNKNOWN_REG]"
-							end
-						
-							local parameterRegister = register + 1
+							local parameterRegister = register + 1 -- parameter registers start from 0
 							if parameterRegister < numParams + 1 then
-								local pIndex = (totalParameters and numParams) and ((totalParameters - numParams) + parameterRegister) or "ERR"
-								return "p".. pIndex
+								-- this means we are using preserved parameter register
+								return "p".. ((totalParameters - numParams) + parameterRegister)
 							end
-						
-							return "v".. (register - (numParams or 0))
+
+							return "v".. (register - numParams)
 						end
-						
+
 						local function formatUpvalue(register)
-							if register == nil then
-								return "u_v[ERROR_UNKNOWN_UPVAL]"
-							end
 							return "u_v".. register
 						end
 
@@ -1439,20 +1432,18 @@ local function Decompile(bytecode)
 
 							result ..= formatRegister(targetRegister) .." = ".. formatRegister(sourceRegister) .." or ".. value
 						elseif opCodeName == "CONCAT" then
-							local targetRegister = table.remove(usedRegisters, 1)
-
-							local totalRegisters = #usedRegisters
-
-							local concatBody = ""
-							for i = 1, totalRegisters do
-								local register = usedRegisters[i]
-								concatBody ..= formatRegister(register)
-
-								if i ~= totalRegisters then
-									concatBody ..= " .. "
-								end
-							end
-							result ..= formatRegister(targetRegister) .." = ".. concatBody
+						    local target = usedRegisters[1]
+						    local startReg = usedRegisters[2]
+						    local endReg = usedRegisters[3]
+						
+						    local concatBody = ""
+						    for reg = startReg, endReg do
+						        concatBody ..= formatRegister(reg)
+						        if reg ~= endReg then
+						            concatBody ..= " .. "
+						        end
+						    end
+						    result ..= formatRegister(target) .. " = " .. concatBody
 						elseif opCodeName == "NOT" then
 							local targetRegister = usedRegisters[1]
 							local sourceRegister = usedRegisters[2]
