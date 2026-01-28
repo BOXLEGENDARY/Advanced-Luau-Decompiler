@@ -1275,85 +1275,58 @@ local function Decompile(bytecode)
 
 							result ..= "-- jump back to #" .. endIndex
 						elseif opCodeName == "JUMPIF" then
-							local sourceRegister = usedRegisters[1]
-
-							local jumpOffset = extraData[1]
-
-							-- where the script will go if the condition is met
-							local endIndex = i + jumpOffset
-
-							makeJumpMarker(endIndex)
-
-							result ..= "if not ".. formatRegister(sourceRegister) .." then -- goto #".. endIndex
+						    local sourceRegister = usedRegisters[1]
+						    local endIndex = i + extraData[1]
+						    makeJumpMarker(endIndex)
+						    result ..= string.format("if %s then -- goto #%d", formatRegister(sourceRegister), endIndex)
+						
 						elseif opCodeName == "JUMPIFNOT" then
-							local sourceRegister = usedRegisters[1]
-
-							local jumpOffset = extraData[1]
-
-							-- where the script will go if the condition is met
-							local endIndex = i + jumpOffset
-
-							makeJumpMarker(endIndex)
-
-							result ..= "if ".. formatRegister(sourceRegister) .." then -- goto #".. endIndex
+						    local sourceRegister = usedRegisters[1]
+						    local endIndex = i + extraData[1]
+						    makeJumpMarker(endIndex)
+						    result ..= string.format("if not %s then -- goto #%d", formatRegister(sourceRegister), endIndex)
+						
 						elseif opCodeName == "JUMPIFEQ" then
-							local leftRegister = usedRegisters[1]
-							local rightRegister = usedRegisters[2]
-
-							local jumpOffset = extraData[1]
-
-							-- where the script will go if the condition is met
-							local endIndex = i + jumpOffset
-
-							makeJumpMarker(endIndex)
-
-							result ..= "if ".. formatRegister(leftRegister) .." == ".. formatRegister(rightRegister) .." then -- goto #".. endIndex
-						elseif opCodeName == "JUMPIFLE" then
-							local leftRegister = usedRegisters[1]
-							local rightRegister = usedRegisters[2]
-
-							local jumpOffset = extraData[1]
-
-							-- where the script will go if the condition is met
-							local endIndex = i + jumpOffset
-
-							makeJumpMarker(endIndex)
-
-							result ..= "if ".. formatRegister(leftRegister) .." => ".. formatRegister(rightRegister) .." then -- goto #".. endIndex
+						    local left = usedRegisters[1]
+						    local right = usedRegisters[2]
+						    local endIndex = i + extraData[1]
+						    makeJumpMarker(endIndex)
+						    result ..= string.format("if %s == %s then -- goto #%d", formatRegister(left), formatRegister(right), endIndex)
+						
+						elseif opCodeName == "JUMPIFNOTEQ" then
+						    local left = usedRegisters[1]
+						    local right = usedRegisters[2]
+						    local endIndex = i + extraData[1]
+						    makeJumpMarker(endIndex)
+						    result ..= string.format("if %s ~= %s then -- goto #%d", formatRegister(left), formatRegister(right), endIndex)
+						
 						elseif opCodeName == "JUMPIFLT" then
-						    local left = usedRegisters[1] -- A
-						    local right = usedRegisters[2] -- AUX
-						    local offset = extraData[1] -- sD
-						    result ..= string.format("if %s < %s then -- goto #%d", formatRegister(left), formatRegister(right), i + offset)
+						    local left = usedRegisters[1]
+						    local right = usedRegisters[2]
+						    local endIndex = i + extraData[1]
+						    makeJumpMarker(endIndex)
+						    result ..= string.format("if %s < %s then -- goto #%d", formatRegister(left), formatRegister(right), endIndex)
+						
 						elseif opCodeName == "JUMPIFLE" then
-						    local left = usedRegisters[1] -- A
-						    local right = usedRegisters[2] -- AUX
-						    local offset = extraData[1] -- sD
-						    result ..= string.format("if %s <= %s then -- goto #%d", formatRegister(left), formatRegister(right), i + offset)
-						elseif opCodeName == "JUMPIFNOTLE" then
-							local leftRegister = usedRegisters[1]
-							local rightRegister = usedRegisters[2]
-
-							local jumpOffset = extraData[1]
-
-							-- where the script will go if the condition is met
-							local endIndex = i + jumpOffset
-
-							makeJumpMarker(endIndex)
-
-							result ..= "if ".. formatRegister(leftRegister) .." <= ".. formatRegister(rightRegister) .." then -- goto #".. endIndex
+						    local left = usedRegisters[1]
+						    local right = usedRegisters[2]
+						    local endIndex = i + extraData[1]
+						    makeJumpMarker(endIndex)
+						    result ..= string.format("if %s <= %s then -- goto #%d", formatRegister(left), formatRegister(right), endIndex)
+						
 						elseif opCodeName == "JUMPIFNOTLT" then
-							local leftRegister = usedRegisters[1]
-							local rightRegister = usedRegisters[2]
-
-							local jumpOffset = extraData[1]
-
-							-- where the script will go if the condition is met
-							local endIndex = i + jumpOffset
-
-							makeJumpMarker(endIndex)
-
-							result ..= "if ".. formatRegister(leftRegister) .." < ".. formatRegister(rightRegister) .." then -- goto #".. endIndex
+						    local left = usedRegisters[1]
+						    local right = usedRegisters[2]
+						    local endIndex = i + extraData[1]
+						    makeJumpMarker(endIndex)
+						    result ..= string.format("if %s >= %s then -- goto #%d", formatRegister(left), formatRegister(right), endIndex)
+						
+						elseif opCodeName == "JUMPIFNOTLE" then
+						    local left = usedRegisters[1]
+						    local right = usedRegisters[2]
+						    local endIndex = i + extraData[1]
+						    makeJumpMarker(endIndex)
+						    result ..= string.format("if %s > %s then -- goto #%d", formatRegister(left), formatRegister(right), endIndex)					
 						elseif opCodeName == "ADD" then
 							local targetRegister = usedRegisters[1]
 							local leftRegister = usedRegisters[2]
