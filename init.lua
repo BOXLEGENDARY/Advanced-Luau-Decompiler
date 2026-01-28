@@ -905,16 +905,23 @@ local function Decompile(bytecode)
 					end
 					local function writeOperationBody()
 						local function formatRegister(register)
-							local parameterRegister = register + 1 -- parameter registers start from 0
-							if parameterRegister < numParams + 1 then
-								-- this means we are using preserved parameter register
-								return "p".. ((totalParameters - numParams) + parameterRegister)
+							if register == nil then
+								return "v[ERROR_UNKNOWN_REG]"
 							end
-
-							return "v".. (register - numParams)
+						
+							local parameterRegister = register + 1
+							if parameterRegister < numParams + 1 then
+								local pIndex = (totalParameters and numParams) and ((totalParameters - numParams) + parameterRegister) or "ERR"
+								return "p".. pIndex
+							end
+						
+							return "v".. (register - (numParams or 0))
 						end
-
+						
 						local function formatUpvalue(register)
+							if register == nil then
+								return "u_v[ERROR_UNKNOWN_UPVAL]"
+							end
 							return "u_v".. register
 						end
 
