@@ -1775,40 +1775,35 @@ local function Decompile(bytecode)
 	end
 
 	local function manager(proceed, issue)
-	    if proceed then
-	        local thread = coroutine.running()
-	        local result, elapsedTime
-	        local hasTimedOut = false
+		if proceed then
+			local startTime = os.clock()
+			local elapsedTime
+			local result
 	
-	        task.spawn(function()
-	            local startTime = os.clock()
-	            local res = finalize(organize())
-	            elapsedTime = os.clock() - startTime
-	            
-	            if coroutine.status(thread) ~= "dead" and not hasTimedOut then
-	                coroutine.resume(thread, res)
-	            end
-	        end)
+			local co = coroutine.running()
 	
-	        task.delay(DECOMPILER_TIMEOUT, function()
-	            if coroutine.status(thread) ~= "dead" and not result then
-	                hasTimedOut = true
-	                coroutine.resume(thread, nil)
-	            end
-	        end)
+			task.spawn(function()
+				result = finalize(organize())
+				elapsedTime = os.clock() - startTime
+				if coroutine.status(co) == "suspended" then
+					coroutine.resume(co)
+				end
+			end)
 	
-	        result = coroutine.yield()
+			while not result and (os.clock() - startTime) < DECOMPILER_TIMEOUT do
+				coroutine.yield()
+			end
 	
-	        if not result then
-	            return Strings.TIMEOUT
-	        end
+			if not result then
+				return Strings.TIMEOUT
+			end
 	
-	        if RETURN_ELAPSED_TIME then
-	            return string.format(Strings.SUCCESS, result), elapsedTime
-	        else
-	            return string.format(Strings.SUCCESS, result)
-	        end
-	    else
+			if RETURN_ELAPSED_TIME then
+				return string.format(Strings.SUCCESS, result), elapsedTime
+			else
+				return string.format(Strings.SUCCESS, result)
+			end
+		else
 			if issue == "COMPILATION_FAILURE" then
 				local errorMessageLength = reader:len() - 1
 				local errorMessage = reader:nextString(errorMessageLength)
@@ -1816,7 +1811,7 @@ local function Decompile(bytecode)
 			elseif issue == "UNSUPPORTED_LBC_VERSION" then
 				return Strings.UNSUPPORTED_LBC_VERSION
 			end
-	    end
+		end
 	end
 
 	bytecodeVersion = reader:nextByte()
