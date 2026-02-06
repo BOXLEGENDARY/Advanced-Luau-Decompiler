@@ -20,9 +20,12 @@ body:
     attributes:
       label: "Steps to Reproduce"
       description: "How did this happen? List the steps to see the issue."
-      placeholder: "1. Go to... 2. Click..."
+      placeholder: |
+        1. Go to...
+        2. Click on...
+        3. See what happens...
   - type: textarea
     id: additional-context
     attributes:
       label: "Additional Information"
-      description: "Add any screenshots, error messages, or other details here."
+      description: "Add any other text-based details or error messages here."
