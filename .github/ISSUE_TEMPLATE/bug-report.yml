@@ -1,0 +1,12 @@
+name: Bug Report
+description: Report a bug you encountered.
+labels: bug
+body:
+  - type: textarea
+    id: bug-description
+    attributes:
+      label: "What's wrong?"
+      description: Please describe the problem in detail so we can help you.
+      placeholder: Describe the bug here...
+    validations:
+      required: true
