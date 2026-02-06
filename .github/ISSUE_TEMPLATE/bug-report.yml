@@ -21,9 +21,7 @@ body:
       label: "Steps to Reproduce"
       description: "How did this happen? List the steps to see the issue."
       placeholder: |
-        1. Go to...
-        2. Click on...
-        3. See what happens...
+        How!?
   - type: textarea
     id: additional-context
     attributes:
