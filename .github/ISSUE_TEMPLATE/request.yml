@@ -58,4 +58,4 @@ body:
     id: additional-info
     attributes:
       label: Additional Information
-      description: "Any other details, images, or examples to support your request."
+      description: "Any other details or examples to support your request."
