@@ -14,6 +14,12 @@ getgenv().decompile(script) -- script must be a Script / LocalScript / ModuleScr
 ```
 
 ---
+## Example
+```lua
+print(getgenv().decompile(game:GetService("Players").LocalPlayer.PlayerScripts.PlayerScriptsLoader)),
+```
+
+---
 ## RETURN_ELAPSED_TIME
 ```lua
 local source, time = getgenv().decompile(script)
