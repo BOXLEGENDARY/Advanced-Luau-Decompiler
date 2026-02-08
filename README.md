@@ -16,7 +16,7 @@ getgenv().decompile(script) -- script must be a Script / LocalScript / ModuleScr
 ---
 ## Example
 ```lua
-print(getgenv().decompile(game:GetService("Players").LocalPlayer.PlayerScripts.PlayerScriptsLoader)),
+print(getgenv().decompile(game:GetService("Players").LocalPlayer.PlayerScripts.PlayerScriptsLoader))
 ```
 
 ---
