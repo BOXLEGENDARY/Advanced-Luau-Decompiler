@@ -10,14 +10,14 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/BOXLEGENDARY/Advanced
 ---
 ## How to use
 ```lua
-getgenv().decompile() -- script path
+getgenv().decompile(script) -- script path
 ```
 
 ---
 ## RETURN_ELAPSED_TIME
 ```lua
 local source, time = getgenv().decompile(script)
-print("Decompiled in:", time)
+print("Decompiled in:", time) -- RETURN_ELAPSED_TIME need to be true
 ```
 
 ---
