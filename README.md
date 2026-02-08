@@ -23,7 +23,8 @@ print(getgenv().decompile(game:GetService("Players").LocalPlayer.PlayerScripts.P
 ## RETURN_ELAPSED_TIME
 ```lua
 local source, time = getgenv().decompile(script)
-print("Decompiled in:", time) -- RETURN_ELAPSED_TIME need to be true
+print("Decompiler in:", time) -- RETURN_ELAPSED_TIME need to be true
+print(source)
 ```
 
 ---
