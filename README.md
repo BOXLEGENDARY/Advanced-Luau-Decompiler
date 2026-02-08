@@ -10,7 +10,7 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/BOXLEGENDARY/Advanced
 ---
 ## How to use
 ```lua
-getgenv().decompile(script) -- script path
+getgenv().decompile(script) -- script must be a Script / LocalScript / ModuleScript
 ```
 
 ---
