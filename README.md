@@ -16,7 +16,8 @@ getgenv().decompile() -- script path
 ---
 ## RETURN_ELAPSED_TIME
 ```lua
-print("Decompiler in:", time) -- RETURN_ELAPSED_TIME need to be true
+local source, time = getgenv().decompile(script)
+print("Decompiled in:", time)
 ```
 
 ---
