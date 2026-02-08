@@ -14,6 +14,12 @@ getgenv().decompile() -- script path
 ```
 
 ---
+## RETURN_ELAPSED_TIME
+```lua
+print("Decompiler in:", time) -- RETURN_ELAPSED_TIME need to be true
+```
+
+---
 ## Developer
 
 by: `ZxL`
