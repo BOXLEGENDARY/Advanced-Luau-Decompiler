@@ -8,26 +8,6 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/BOXLEGENDARY/Advanced
 ```
 
 ---
-## How to use
-```lua
-getgenv().decompile(script) -- script must be a Script / LocalScript / ModuleScript
-```
-
----
-## Example
-```lua
-print(getgenv().decompile(game:GetService("Players").LocalPlayer.PlayerScripts.PlayerScriptsLoader))
-```
-
----
-## RETURN_ELAPSED_TIME
-```lua
-local source, time = getgenv().decompile(script)
-print("Decompiler in:", time) -- RETURN_ELAPSED_TIME need to be true
-print(source)
-```
-
----
 ## Developer
 
 by: `ZxL`
