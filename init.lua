@@ -7,7 +7,7 @@ local ENABLED_REMARKS = {
 }
 local DECOMPILER_TIMEOUT = 2 -- seconds
 local READER_FLOAT_PRECISION = 7 -- up to 99
-local DECOMPILER_MODE = "disasm" -- disasm/optdec
+local DECOMPILER_MODE = "optdec" -- disasm/optdec
 local SHOW_DEBUG_INFORMATION = true -- show trivial function and array allocation details
 local SHOW_INSTRUCTION_LINES = true -- show lines as they are in the source code
 local SHOW_OPERATION_NAMES = true
@@ -1761,14 +1761,404 @@ local function Decompile(bytecode)
 
 			finalResult = processResult(result)
 		else -- assume optdec - optimized decompiler
-			local result = ""
-			-- remove temporary registers and some optimization passes
-			local function optimize(code)
-				result = code
-			end
-			optimize("-- one day..")
-
-			finalResult = processResult(result)
+		    local Lifter = {}
+		
+		    Lifter.pcToIndex = {}
+		    Lifter.indexToPc = {}
+		
+		    local function mapPC(pc, idx)
+		        Lifter.pcToIndex[pc] = idx
+		        Lifter.indexToPc[idx] = pc
+		    end
+		
+		    local function toIndex(target)
+		        if not target then return nil end
+		        if Lifter.pcToIndex[target] then return Lifter.pcToIndex[target] end
+		        if Lifter.indexToPc[target] then return target end
+		        return tonumber(target) or nil
+		    end
+		
+		    local function flushPendingTable(ctx, regIdx)
+		        if ctx.pendingTable and ctx.pendingTable.reg == regIdx and not ctx.pendingTable.confirmed then
+		            ctx.pendingTable.confirmed = true
+		        end
+		    end
+		
+		    local function improvedGetReg(self, index, minPrio)
+		        flushPendingTable(self, index)
+		        local debugName = self:getDebugLocalName(index)
+		        if debugName then return debugName end
+		        local reg = self.registers[index]
+		        if reg and self.tempRegisters[index] then
+		            local name = reg.text
+		            if minPrio and reg.prio < minPrio then
+		                return "(" .. name .. ")"
+		            end
+		            return name
+		        end
+		        if reg and reg.text then return reg.text end
+		        return ("r%d"):format(index)
+		    end
+		
+		    local table_insert = table.insert
+		    local table_concat = table.concat
+		    local table_remove = table.remove
+		    local string_format = string.format
+		    local string_rep = string.rep
+		    local bit32_band = bit32.band
+		    local bit32_rshift = bit32.rshift
+		    local bit32_lshift = bit32.lshift
+		    local bit32_btest = bit32.btest
+		
+		    local INDENT_STRING = "    "
+		
+		    local PREC = {
+		        OR = 1, AND = 2, COMPARE = 3, CONCAT = 4, ADD = 5, 
+		        MUL = 6, UNARY = 7, POW = 8, ATOMIC = 9
+		    }
+		
+		    function Lifter.init(luauModule, implementationsModule)
+		        return Lifter
+		    end
+		
+		    local Context = {}
+		    Context.__index = Context
+		
+		    function Context.new(proto, protoId, depth)
+		        local self = setmetatable({}, Context)
+		        self.proto = proto
+		        self.id = protoId
+		        self.depth = depth or 0
+		        self.instructions = proto.instructions
+		        self.constants = proto.constants
+		        self.innerProtos = proto.innerProtos
+		        self.debugLocals = proto.debugLocals
+		        self.debugUpvalues = proto.debugUpvalues
+		        self.pc = 1
+		        self.length = #self.instructions
+		        self.lines = {} 
+		        self.indentLevel = 0
+		        self.registers = {}
+		        self.tempRegisters = {}
+		        self.scopeStack = {} 
+		        self.jumpTargets = {} 
+		        self.elseTargets = {}
+		        self.loopEnds = {}
+		        self.pendingNamecall = nil
+		        self.pendingTable = nil
+		        return self
+		    end
+		
+		    function Context:emit(text)
+		        if not text then return end
+		        local indent = string_rep(INDENT_STRING, self.indentLevel)
+		        table_insert(self.lines, indent .. text)
+		    end
+		
+		    function Context:indent() self.indentLevel += 1 end
+		    function Context:outdent() self.indentLevel = math.max(0, self.indentLevel - 1) end
+		
+		    function Context:flushPendingTable()
+		        if self.pendingTable and not self.pendingTable.flushed then
+		            local tbl = self.pendingTable
+		            local content = "{" .. table_concat(tbl.items, ", ") .. "}"
+		            self:setReg(tbl.reg, content, PREC.ATOMIC)
+		            tbl.flushed = true
+		            self.pendingTable = nil
+		        end
+		    end
+		
+		    function Context:setReg(index, expr, priority)
+		        if self.pendingTable and self.pendingTable.reg == index then
+		            self:flushPendingTable()
+		        end
+		        self.registers[index] = { text = expr, prio = priority or 0 }
+		        self.tempRegisters[index] = true
+		    end
+		
+		    function Context:getReg(index, minPrio)
+		        return improvedGetReg(self, index, minPrio)
+		    end
+		
+		    function Context:getConstant(kIndex)
+		        local k = self.constants[kIndex + 1]
+		        if not k then return "nil" end
+		        local type = k.type
+		        if type == LuauBytecodeTag.LBC_CONSTANT_STRING then
+		            return toEscapedString(k.value)
+		        elseif type == LuauBytecodeTag.LBC_CONSTANT_BOOLEAN or type == LuauBytecodeTag.LBC_CONSTANT_NUMBER then
+		            return medical(k.value)
+		        elseif type == LuauBytecodeTag.LBC_CONSTANT_NIL then
+		            return "nil"
+		        elseif type == LuauBytecodeTag.LBC_CONSTANT_VECTOR then
+		            return tostring(k.value) 
+		        end
+		        return tostring(k.value)
+		    end
+		
+		    function Context:getUpvalue(index)
+		        if self.debugUpvalues and self.debugUpvalues[index + 1] then
+		            return self.debugUpvalues[index + 1].name
+		        end
+		        return "upval_" .. (index + 1)
+		    end
+		
+		    function Context:analyzeFlow()
+		        for i, ins in ipairs(self.instructions) do
+		            local op = Luau:INSN_OP(ins)
+		            local opInfo = LuauOpCode[op]
+		            if not opInfo then continue end
+		            if opInfo.name:find("JUMP") or opInfo.name:find("FOR") then
+		                local sD = Luau:INSN_sD(ins)
+		                if opInfo.name == "JUMPX" then sD = Luau:INSN_E(ins) end
+		                local target = i + 1 + sD
+		                self.jumpTargets[target] = true
+		                if sD > 0 and opInfo.name == "JUMP" then
+		                    self.elseTargets[target] = true
+		                end
+		            end
+		        end
+		    end
+		
+		    function Context:process()
+		        self:analyzeFlow()
+		        if self.proto.numParams > 0 then
+		            for i = 0, self.proto.numParams - 1 do
+		                self.registers[i] = { text = "arg"..(i+1), prio = PREC.ATOMIC }
+		                self.tempRegisters[i] = false
+		            end
+		        end
+		
+		        while self.pc <= self.length do
+		            local pc = self.pc
+		            for i = #self.scopeStack, 1, -1 do
+		                local scope = self.scopeStack[i]
+		                if pc == scope.endPC then
+		                    self:outdent()
+		                    if scope.type == "IF" and self.elseTargets[pc] then
+		                        self:emit("else")
+		                        self:indent()
+		                        scope.type = "ELSE"
+		                    else
+		                        self:emit("end")
+		                        table_remove(self.scopeStack, i)
+		                    end
+		                end
+		            end
+		
+		            local ins = self.instructions[pc]
+		            local op = Luau:INSN_OP(ins)
+		            local opInfo = LuauOpCode[op]
+		            
+		            if not opInfo then
+		                self:emit("--[[ Unknown Op: " .. op .. " ]]")
+		                self.pc += 1; continue
+		            end
+		            
+		            local opName = opInfo.name
+		            local A = Luau:INSN_A(ins)
+		            local B = Luau:INSN_B(ins)
+		            local C = Luau:INSN_C(ins)
+		            local D = Luau:INSN_D(ins)
+		            local sD = Luau:INSN_sD(ins)
+		            local aux = opInfo.aux and self.instructions[pc + 1] or 0
+		
+		            if self.pendingTable and opName ~= "SETLIST" and opName ~= "DUPTABLE" then
+		                if not (opName == "MOVE" and B == self.pendingTable.reg) then
+		                    self:flushPendingTable()
+		                end
+		            end
+		
+		            if opName == "LOADNIL" then self:emit(self:getReg(A) .. " = nil")
+		            elseif opName == "LOADB" then
+		                local val = (B == 1) and "true" or "false"
+		                self:setReg(A, val, PREC.ATOMIC)
+		                if C ~= 0 then self:emit("--[[ Jump + " .. C .. " ]]") end
+		            elseif opName == "LOADN" then self:setReg(A, tostring(sD), PREC.ATOMIC)
+		            elseif opName == "LOADK" then self:setReg(A, self:getConstant(D), PREC.ATOMIC)
+		            elseif opName == "LOADKX" then self:setReg(A, self:getConstant(aux), PREC.ATOMIC)
+		            elseif opName == "MOVE" then self:setReg(A, self:getReg(B), self.registers[B] and self.registers[B].prio or 0)
+		            elseif opName == "GETGLOBAL" then self:setReg(A, self:getConstant(aux), PREC.ATOMIC)
+		            elseif opName == "SETGLOBAL" then self:emit(self:getConstant(aux) .. " = " .. self:getReg(A))
+		            elseif opName == "GETIMPORT" then
+		                local count = bit32_rshift(aux, 30)
+		                local id0 = bit32_band(bit32_rshift(aux, 20), 0x3FF)
+		                local path = self:getConstant(id0)
+		                if count > 1 then path = path .. "." .. self:getConstant(bit32_band(bit32_rshift(aux, 10), 0x3FF)) end
+		                if count > 2 then path = path .. "." .. self:getConstant(bit32_band(aux, 0x3FF)) end
+		                self:setReg(A, path, PREC.ATOMIC)
+		            elseif opName == "NEWTABLE" then
+		                self.pendingTable = { reg = A, items = {}, confirmed = false }
+		                self:setReg(A, "{}", PREC.ATOMIC) 
+		            elseif opName == "DUPTABLE" then
+		                local const = self.constants[D + 1]
+		                local keys = const.value.keys
+		                local parts = {}
+		                for _, kIdx in ipairs(keys) do table_insert(parts, self:getConstant(kIdx) .. " = nil") end
+		                self:setReg(A, "{" .. table_concat(parts, ", ") .. "}", PREC.ATOMIC)
+		            elseif opName == "SETLIST" then
+		                local count = C - 1
+		                local startIdx = aux
+		                if self.pendingTable and self.pendingTable.reg == A and startIdx == (#self.pendingTable.items + 1) then
+		                    for i = 1, count do table_insert(self.pendingTable.items, self:getReg(B + i - 1)) end
+		                else
+		                    self:flushPendingTable()
+		                    self:emit("--[[ SETLIST " .. self:getReg(A) .. " start:" .. startIdx .. " count:" .. count .. " ]]")
+		                end
+		            elseif opName == "GETTABLEKS" then
+		                local key = self:getConstant(aux)
+		                local tbl = self:getReg(B, PREC.ATOMIC)
+		                self:setReg(A, tbl .. formatIndexString(key), PREC.ATOMIC)
+		            elseif opName == "SETTABLEKS" then
+		                local key = self:getConstant(aux)
+		                local tbl = self:getReg(B, PREC.ATOMIC)
+		                self:emit(tbl .. formatIndexString(key) .. " = " .. self:getReg(A))
+		            elseif opName == "ADD" then self:setReg(A, self:getReg(B, PREC.ADD) .. " + " .. self:getReg(C, PREC.ADD), PREC.ADD)
+		            elseif opName == "SUB" then self:setReg(A, self:getReg(B, PREC.ADD) .. " - " .. self:getReg(C, PREC.ADD), PREC.ADD)
+		            elseif opName == "MUL" then self:setReg(A, self:getReg(B, PREC.MUL) .. " * " .. self:getReg(C, PREC.MUL), PREC.MUL)
+		            elseif opName == "DIV" then self:setReg(A, self:getReg(B, PREC.MUL) .. " / " .. self:getReg(C, PREC.MUL), PREC.MUL)
+		            elseif opName == "MOD" then self:setReg(A, self:getReg(B, PREC.MUL) .. " % " .. self:getReg(C, PREC.MUL), PREC.MUL)
+		            elseif opName == "POW" then self:setReg(A, self:getReg(B, PREC.POW) .. " ^ " .. self:getReg(C, PREC.POW), PREC.POW)
+		            elseif opName == "ADDK" then self:setReg(A, self:getReg(B, PREC.ADD) .. " + " .. self:getConstant(C), PREC.ADD)
+		            elseif opName == "SUBK" then self:setReg(A, self:getReg(B, PREC.ADD) .. " - " .. self:getConstant(C), PREC.ADD)
+		            elseif opName == "MULK" then self:setReg(A, self:getReg(B, PREC.MUL) .. " * " .. self:getConstant(C), PREC.MUL)
+		            elseif opName == "DIVK" then self:setReg(A, self:getReg(B, PREC.MUL) .. " / " .. self:getConstant(C), PREC.MUL)
+		            elseif opName == "MODK" then self:setReg(A, self:getReg(B, PREC.MUL) .. " % " .. self:getConstant(C), PREC.MUL)
+		            elseif opName == "POWK" then self:setReg(A, self:getReg(B, PREC.POW) .. " ^ " .. self:getConstant(C), PREC.POW)
+		            elseif opName == "NOT" then self:setReg(A, "not " .. self:getReg(B, PREC.UNARY), PREC.UNARY)
+		            elseif opName == "MINUS" then self:setReg(A, "-" .. self:getReg(B, PREC.UNARY), PREC.UNARY)
+		            elseif opName == "LENGTH" then self:setReg(A, "#" .. self:getReg(B, PREC.UNARY), PREC.UNARY)
+		            elseif opName == "AND" then self:setReg(A, self:getReg(B, PREC.AND) .. " and " .. self:getReg(C, PREC.AND), PREC.AND)
+		            elseif opName == "OR" then self:setReg(A, self:getReg(B, PREC.OR) .. " or " .. self:getReg(C, PREC.OR), PREC.OR)
+		            elseif opName == "ANDK" then self:setReg(A, self:getReg(B, PREC.AND) .. " and " .. self:getConstant(C), PREC.AND)
+		            elseif opName == "ORK" then self:setReg(A, self:getReg(B, PREC.OR) .. " or " .. self:getConstant(C), PREC.OR)
+		            elseif opName == "CONCAT" then
+		                local parts = {}
+		                for i = B, C do table_insert(parts, self:getReg(i, PREC.CONCAT)) end
+		                self:setReg(A, table_concat(parts, " .. "), PREC.CONCAT)
+		            elseif opName == "JUMPIF" then
+		                self:emit("if not " .. self:getReg(A) .. " then")
+		                table_insert(self.scopeStack, { type = "IF", endPC = pc + 1 + sD })
+		                self:indent()
+		            elseif opName == "JUMPIFNOT" then
+		                self:emit("if " .. self:getReg(A) .. " then")
+		                table_insert(self.scopeStack, { type = "IF", endPC = pc + 1 + sD })
+		                self:indent()
+		            elseif opName == "JUMPIFEQ" then
+		                self:emit(string_format("if %s ~= %s then", self:getReg(A, PREC.COMPARE), self:getReg(aux, PREC.COMPARE)))
+		                table_insert(self.scopeStack, { type = "IF", endPC = pc + 1 + sD })
+		                self:indent()
+		            elseif opName == "JUMPIFNOTEQ" then
+		                self:emit(string_format("if %s == %s then", self:getReg(A, PREC.COMPARE), self:getReg(aux, PREC.COMPARE)))
+		                table_insert(self.scopeStack, { type = "IF", endPC = pc + 1 + sD })
+		                self:indent()
+		            elseif opName == "JUMPIFLT" then
+		                self:emit(string_format("if not (%s < %s) then", self:getReg(A, PREC.COMPARE), self:getReg(aux, PREC.COMPARE)))
+		                table_insert(self.scopeStack, { type = "IF", endPC = pc + 1 + sD })
+		                self:indent()
+		            elseif opName == "JUMPIFLE" then
+		                self:emit(string_format("if not (%s <= %s) then", self:getReg(A, PREC.COMPARE), self:getReg(aux, PREC.COMPARE)))
+		                table_insert(self.scopeStack, { type = "IF", endPC = pc + 1 + sD })
+		                self:indent()
+		            elseif opName == "FORNPREP" then
+		                local limit = self:getReg(A)
+		                local step = self:getReg(A + 1)
+		                local idx = self:getReg(A + 2)
+		                local loopVar = "i"
+		                if idx:match("^v%d+$") then loopVar = "i_"..idx:sub(2) end
+		                self:emit(string_format("for %s = %s, %s, %s do", loopVar, idx, limit, step))
+		                table_insert(self.scopeStack, { type = "LOOP", endPC = pc + 1 + sD })
+		                self:indent()
+		            elseif opName == "FORGPREP" or opName == "FORGPREP_NEXT" or opName == "FORGPREP_INEXT" then
+		                local gen = self:getReg(A)
+		                local loopType = (opName == "FORGPREP_INEXT" and "ipairs") or (opName == "FORGPREP_NEXT" and "pairs") or nil
+		                local idxName, valName = "idx", "val"
+		                self:setReg(A + 3, idxName, PREC.ATOMIC); self.tempRegisters[A + 3] = false
+		                self:setReg(A + 4, valName, PREC.ATOMIC); self.tempRegisters[A + 4] = false
+		                local stmt = loopType and string_format("for %s, %s in %s(%s) do", idxName, valName, loopType, self:getReg(A+1)) or string_format("for %s, %s in %s do", idxName, valName, gen)
+		                self:emit(stmt)
+		                table_insert(self.scopeStack, { type = "LOOP", endPC = pc + 1 + sD })
+		                self:indent()
+		            elseif opName == "NAMECALL" then
+		                local obj = self:getReg(B, PREC.ATOMIC)
+		                local method = self:getConstant(aux)
+		                self.pendingNamecall = { obj = obj, method = method, reg = A }
+		            elseif opName == "CALL" then
+		                local callStr
+		                local argCount = B - 1
+		                local args = {}
+		                if argCount == -1 then table_insert(args, "...") 
+		                else
+		                    for i = 0, argCount - 1 do
+		                        if self.pendingNamecall and i == 0 then continue end
+		                        table_insert(args, self:getReg(A + 1 + i))
+		                    end
+		                end
+		                if self.pendingNamecall and self.pendingNamecall.reg == A then
+		                    callStr = string_format("%s:%s(%s)", self.pendingNamecall.obj, self.pendingNamecall.method, table_concat(args, ", "))
+		                    self.pendingNamecall = nil
+		                else
+		                    callStr = string_format("%s(%s)", self:getReg(A, PREC.ATOMIC), table_concat(args, ", "))
+		                end
+		                local resCount = C - 1
+		                if resCount == 0 then self:emit(callStr)
+		                elseif resCount == 1 then self:setReg(A, callStr, PREC.ATOMIC)
+		                elseif resCount > 1 then
+		                    local vars = {}
+		                    for i = 0, resCount - 1 do
+		                        local v = "v" .. (A + i)
+		                        table_insert(vars, v)
+		                        self:setReg(A + i, v, PREC.ATOMIC)
+		                        self.tempRegisters[A + i] = false
+		                    end
+		                    self:emit(table_concat(vars, ", ") .. " = " .. callStr)
+		                else self:emit("... = " .. callStr) end
+		            elseif opName == "RETURN" then
+		                local count = B - 1
+		                if count == 0 then self:emit("return")
+		                else
+		                    local rets = {}
+		                    for i = 0, count - 1 do table_insert(rets, self:getReg(A + i)) end
+		                    self:emit("return " .. table_concat(rets, ", "))
+		                end
+		            elseif opName == "NEWCLOSURE" then
+		                local protoIdx = D
+		                local inner = self.innerProtos[protoIdx + 1]
+		                local funcName = (inner.name or "func_" .. self.id .. "_" .. protoIdx)
+		                local innerCode = Lifter.decompile(inner, self.id .. "_" .. protoIdx, self.depth + 1)
+		                self:emit(""); self:emit("local function " .. funcName .. "(...)")
+		                self:indent()
+		                for line in string.gmatch(innerCode, "[^\r\n]+") do self:emit(line) end
+		                self:outdent(); self:emit("end"); self:emit("")
+		                self:setReg(A, funcName, PREC.ATOMIC)
+		            elseif opName == "DUPCLOSURE" then
+		                local protoIdx = self.constants[D + 1].value
+		                self:setReg(A, "func_proto_" .. protoIdx, PREC.ATOMIC)
+		            elseif opName == "GETUPVAL" then self:setReg(A, self:getUpvalue(B), PREC.ATOMIC)
+		            elseif opName == "SETUPVAL" then self:emit(self:getUpvalue(B) .. " = " .. self:getReg(A))
+		            end
+		            
+		            self.pc = self.pc + 1 + (opInfo.aux and 1 or 0)
+		        end
+		        
+		        while #self.scopeStack > 0 do
+		            self:outdent()
+		            self:emit("end")
+		            table_remove(self.scopeStack)
+		        end
+		        return table_concat(self.lines, "\n")
+		    end
+		
+		    function Lifter.decompile(proto, protoId, depth)
+		        local ctx = Context.new(proto, protoId or "main", depth)
+		        local ok, res = pcall(function() return ctx:process() end)
+		        if not ok then return "-- Decompiler Error: " .. tostring(res) .. "\n" .. table_concat(ctx.lines, "\n") end
+		        return res
+		    end
+		    
+		    local mainProto = protoTable[mainProtoId]
+		    local decompiledCode = Lifter.decompile(mainProto)
+		    finalResult = processResult(decompiledCode)
 		end
 
 		return finalResult
