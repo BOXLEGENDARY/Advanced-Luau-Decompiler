@@ -2233,6 +2233,7 @@ local function Decompile(bytecode)
 			local mainProto = protoTable[mainProtoId]
 			local decompiledCode = Lifter.decompile(mainProto)
 			finalResult = processResult(decompiledCode)
+		end
 			
 		return finalResult
 	end
