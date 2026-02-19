@@ -2234,8 +2234,8 @@ local function Decompile(bytecode)
 			local decompiledCode = Lifter.decompile(mainProto)
 			finalResult = processResult(decompiledCode)
 			
-			return finalResult
-		end
+		return finalResult
+	end
 
 	local function manager(proceed, issue)
 		if proceed then
