@@ -2096,12 +2096,6 @@ local function Decompile(bytecode)
 			                self:emit(string_format("if %s > %s then", self:getReg(A, PREC.COMPARE), self:getReg(aux, PREC.COMPARE)))
 			                table_insert(self.scopeStack, { type = "IF", endPC = self.pc + 1 + (sD or 0) })
 			                self:indent()
-			            elseif opName == "JUMP" or opName == "JUMPX" then
-			                local t = self.pc + 1 + sD
-			                local currentScope = self.scopeStack[#self.scopeStack]
-			                if currentScope and currentScope.type == "LOOP" and t > currentScope.endPC then
-			                    self:emit("break")
-			                end
 			
 			            -- Loops
 			            elseif opName == "FORNPREP" then
