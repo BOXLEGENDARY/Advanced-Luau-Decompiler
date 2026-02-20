@@ -1901,19 +1901,21 @@ local function Decompile(bytecode)
 			function Context:analyzeFlow()
 			    for i = 1, #self.instructions do
 			        local ins = self.instructions[i]
-			        if not ins then goto continue_flow end
-			        local ok, op = pcall(function() return Luau:INSN_OP(ins) end)
-			        if not ok then goto continue_flow end
-			        local opInfo = LuauOpCode[op]
-			        if not opInfo then goto continue_flow end
-			        if opInfo.name:find("JUMP") or opInfo.name:find("FOR") then
-			            local sD = 0
-			            if Luau.INSN_sD then pcall(function() sD = Luau:INSN_sD(ins) end) end
-			            if opInfo.name == "JUMPX" and Luau.INSN_E then pcall(function() sD = Luau:INSN_E(ins) end) end
-			            local target = i + 1 + (sD or 0)
-			            self.jumpTargets[target] = true
+			        if ins then -- ใช้ if คลุมแทนการใช้ goto
+			            local ok, op = pcall(function() return Luau:INSN_OP(ins) end)
+			            if ok then
+			                local opInfo = LuauOpCode[op]
+			                if opInfo then
+			                    if opInfo.name:find("JUMP") or opInfo.name:find("FOR") then
+			                        local sD = 0
+			                        if Luau.INSN_sD then pcall(function() sD = Luau:INSN_sD(ins) end) end
+			                        if opInfo.name == "JUMPX" and Luau.INSN_E then pcall(function() sD = Luau:INSN_E(ins) end) end
+			                        local target = i + 1 + (sD or 0)
+			                        self.jumpTargets[target] = true
+			                    end
+			                end
+			            end
 			        end
-			        ::continue_flow::
 			    end
 			end
 			
@@ -2096,6 +2098,12 @@ local function Decompile(bytecode)
 			                self:emit(string_format("if %s > %s then", self:getReg(A, PREC.COMPARE), self:getReg(aux, PREC.COMPARE)))
 			                table_insert(self.scopeStack, { type = "IF", endPC = self.pc + 1 + (sD or 0) })
 			                self:indent()
+			            elseif opName == "JUMP" or opName == "JUMPX" then
+			                local t = self.pc + 1 + sD
+			                local currentScope = self.scopeStack[#self.scopeStack]
+			                if currentScope and currentScope.type == "LOOP" and t > currentScope.endPC then
+			                    self:emit("break")
+			                end
 			
 			            -- Loops
 			            elseif opName == "FORNPREP" then
