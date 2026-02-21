@@ -2193,6 +2193,9 @@ local function Decompile(bytecode)
 						    end
 						
 						    self:setReg(A, expr, PREC.DOT)
+						    if self.registers[A] then 
+						        self.registers[A].isGlobal = false 
+						    end
 			            elseif opName == "SETTABLEKS" then
 			                local targetName = self:getReg(B)
 			                local rawKey = self:getConstant(aux)
@@ -2269,14 +2272,21 @@ local function Decompile(bytecode)
 			                self:emit(string_format("if %s %s %s then", self:getReg(A, PREC.COMPARE), sign, val))
 			                table_insert(self.scopeStack, { type = "IF", endPC = self.pc + 1 + (sD or 0) })
 			                self:indent()
-			            elseif opName == "JUMP" or opName == "JUMPX" then
-			                local t = self.pc + 1 + sD
-			                local currentScope = self.scopeStack[#self.scopeStack]
-			                
-			                if sD < 0 then
-			                elseif currentScope and currentScope.type == "LOOP" and t >= currentScope.endPC then
-			                    self:emit("break")
-			                end
+						elseif opName == "JUMP" or opName == "JUMPX" then
+						    local t = self.pc + 1 + sD
+						    local currentScope = self.scopeStack[#self.scopeStack]
+						    
+						    local isElseJump = false
+						    if currentScope and currentScope.type == "IF" and t > self.pc then
+						        isElseJump = true
+						    end
+						    
+						    if isElseJump then
+						    elseif sD < 0 then
+			
+						    elseif currentScope and currentScope.type == "LOOP" and t >= currentScope.endPC then
+						        self:emit("break")
+						    end
 			
 			            -- Loops
 			            elseif opName == "FORNPREP" then
@@ -2321,13 +2331,13 @@ local function Decompile(bytecode)
 						    self.pendingNamecall = {
 						        method = cleanKey,
 						        baseReg = A,
-						        objectText = self:getReg(A) 
+						        objectText = self:getReg(B)
 						    }
 						elseif opName == "CALL" then
 						    local argCount = (B or 0) - 1
 						    local args = {}
 						    
-						    local isMethod = (self.pendingNamecall ~= nil)
+						    local isMethod = (self.pendingNamecall ~= nil and self.pendingNamecall.baseReg == A)
 						    local startOffset = isMethod and 2 or 1 
 						
 						    if argCount == -1 then 
@@ -2341,9 +2351,15 @@ local function Decompile(bytecode)
 						    local callStr = ""
 						    if isMethod then
 						        local methodName = self.pendingNamecall.method
-						        local object = self:getReg(A)
+						        local object = self.pendingNamecall.objectText
 						        
-						        callStr = string_format("%s:%s(%s)", object, methodName, table_concat(args, ", "))
+						        if object == "game" and methodName == "GetService" and #args == 1 then
+						            callStr = string_format("game:GetService(%s)", args[1])
+						            self:setReg(A, callStr, PREC.ATOMIC)
+						            self.registers[A].isGlobal = true
+						        else
+						            callStr = string_format("%s:%s(%s)", object, methodName, table_concat(args, ", "))
+						        end
 						        self.pendingNamecall = nil
 						    else
 						        callStr = string_format("%s(%s)", self:getReg(A, PREC.ATOMIC), table_concat(args, ", "))
@@ -2352,14 +2368,21 @@ local function Decompile(bytecode)
 						    local resCount = (C or 0) - 1
 						    if resCount == 0 then 
 						        self:emit(callStr)
-						    elseif resCount == 1 then 
-						        self:assignReg(A, callStr)
-						        if self.registers[A] then self.registers[A].isVariable = true end
+						    elseif resCount == 1 then
+						        if self.registers[A] and self.registers[A].isGlobal then
+						            self:emit("local v" .. A .. " = " .. callStr)
+						            self:setReg(A, "v" .. A, PREC.ATOMIC)
+						            self.declaredLocals[A] = true
+						        else
+						            self:assignReg(A, callStr)
+						            if self.registers[A] then self.registers[A].isVariable = true end
+						        end
 						    else
 						        local vars = {}
 						        for i = 0, (resCount > 0 and resCount - 1 or 0) do
 						            local regIdx = A + i
-						            table_insert(vars, self:getReg(regIdx))
+						            table_insert(vars, "v" .. regIdx)
+						            self:setReg(regIdx, "v" .. regIdx, PREC.ATOMIC)
 						            self.declaredLocals[regIdx] = true
 						        end
 						        self:emit("local " .. table_concat(vars, ", ") .. " = " .. callStr)
