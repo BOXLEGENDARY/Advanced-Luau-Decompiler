@@ -2294,19 +2294,23 @@ local function Decompile(bytecode)
 						    local argCount = (B or 0) - 1
 						    local args = {}
 						    
+						    local isMethod = (self.namecall ~= nil)
+						    local startOffset = isMethod and 2 or 1 
+						
 						    if argCount == -1 then 
 						        table_insert(args, "...")
-						    else
-						        local startOffset = self.namecall and 2 or 1
+						    elseif argCount > 0 then
 						        for i = startOffset, argCount do
 						            table_insert(args, self:getReg(A + i))
 						        end
 						    end
 						
 						    local callStr
-						    if self.namecall then
-						        local object = self:getReg(A + 1)
-						        callStr = string_format("%s:%s(%s)", object, self.namecall.method, table_concat(args, ", "))
+						    if isMethod then
+						        local methodName = (type(self.namecall) == "table") and self.namecall.method or self.namecall
+						        local object = self:getReg(A + 1) -- Object ตัวจริงคือ A+1
+						        
+						        callStr = string_format("%s:%s(%s)", object, methodName, table_concat(args, ", "))
 						        self.namecall = nil
 						    else
 						        callStr = string_format("%s(%s)", self:getReg(A, PREC.ATOMIC), table_concat(args, ", "))
