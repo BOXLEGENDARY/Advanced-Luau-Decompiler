@@ -2387,9 +2387,11 @@ local function Decompile(bytecode)
 						        text = "{}",
 						        fields = {},
 						        prio = PREC.ATOMIC,
+						        isInlineable = true,
 						        shape = (const and const.value and const.value.keys)
 						    }
 						    self.tempRegisters[A] = true
+						    self.declaredLocals[A] = false
 						    self.pendingTables[A] = { items = {} }
 			            elseif opName == "SETLIST" then
 			                local count = (C or 0) - 1
