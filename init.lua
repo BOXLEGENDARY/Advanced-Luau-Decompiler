@@ -1925,8 +1925,16 @@ local function Decompile(bytecode)
 			    local debugName = self:getDebugLocalName(index)
 			    local regName = debugName or "v" .. index
 			    local useCount = self.usageCount[index] or 0
+			    local reg = self.registers[index]
 			    
-			    local isFunctionCall = expr:find("%(") or expr:find(":")
+			    local isFunctionCall = expr:match("%(") or expr:match(":")
+			    
+			    if reg and reg.isTable and not self.declaredLocals[index] then
+			        reg.text = expr
+			        reg.isInlineable = true
+			        reg.isVariable = false
+			        return 
+			    end
 			    
 			    if debugName or useCount > 1 or isFunctionCall or self.declaredLocals[index] then
 			        if not self.declaredLocals[index] then
@@ -1941,7 +1949,8 @@ local function Decompile(bytecode)
 			            prio = PREC.ATOMIC, 
 			            isGlobal = false,
 			            isVariable = true,
-			            isInlineable = false
+			            isInlineable = false,
+			            isTable = (reg and reg.isTable)
 			        }
 			    else
 			        self.registers[index] = { 
@@ -1949,12 +1958,12 @@ local function Decompile(bytecode)
 			            prio = PREC.ATOMIC,
 			            isGlobal = false,
 			            isVariable = false, 
-			            isInlineable = true
+			            isInlineable = true,
+			            isTable = (reg and reg.isTable)
 			        }
 			    end
 			    
 			    self.tempRegisters[index] = false
-			
 			    if self.pendingNamecall and self.pendingNamecall.baseReg == index then
 			        self.pendingNamecall = nil
 			    end
