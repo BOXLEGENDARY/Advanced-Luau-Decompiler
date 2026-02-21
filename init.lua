@@ -2079,8 +2079,11 @@ local function Decompile(bytecode)
 			
 			            if opName == "LOADNIL" then
 			                self:setReg(A, "nil", PREC.ATOMIC)
-			            elseif opName == "LOADB" then
-			                self:setReg(A, (B == 1) and "true" or "false", PREC.ATOMIC)
+						elseif opName == "LOADB" then
+						    self:setReg(A, (B == 1) and "true" or "false", PREC.ATOMIC)
+						    if C > 0 then
+						        self.pc = self.pc + C
+						    end
 			            elseif opName == "LOADN" then
 			                self:setReg(A, tostring(sD), PREC.ATOMIC)
 			            elseif opName == "LOADK" then
@@ -2282,22 +2285,28 @@ local function Decompile(bytecode)
 						elseif opName == "NAMECALL" then
 						    local rawKey = self:getConstant(aux)
 						    local cleanKey = rawKey:gsub('^"', ''):gsub('"$', '')
-						    self.namecall = cleanKey
+						    
+						    self.namecall = {
+						        method = cleanKey,
+						        baseReg = A
+						    }
 						elseif opName == "CALL" then
-						    local argCount, args = (B or 0) - 1, {}
+						    local argCount = (B or 0) - 1
+						    local args = {}
+						    
 						    if argCount == -1 then 
 						        table_insert(args, "...")
-						    elseif argCount > 0 then
-						        for i = 0, argCount - 1 do
-						            if not (self.namecall and i == 0) then
-						                table_insert(args, self:getReg(A + 1 + i))
-						            end
+						    else
+						        local startOffset = self.namecall and 2 or 1
+						        for i = startOffset, argCount do
+						            table_insert(args, self:getReg(A + i))
 						        end
 						    end
 						
 						    local callStr
 						    if self.namecall then
-						        callStr = string_format("%s:%s(%s)", self:getReg(A + 1), self.namecall, table_concat(args, ", "))
+						        local object = self:getReg(A + 1)
+						        callStr = string_format("%s:%s(%s)", object, self.namecall.method, table_concat(args, ", "))
 						        self.namecall = nil
 						    else
 						        callStr = string_format("%s(%s)", self:getReg(A, PREC.ATOMIC), table_concat(args, ", "))
