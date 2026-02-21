@@ -2328,10 +2328,19 @@ local function Decompile(bytecode)
 						        self.registers[A].forceVariableName = true 
 						    end
 						
+						    local objectText = self:getReg(B)
+						    local objectObj = self.registers[B]
+						    
+						    if not self.declaredLocals[B] and objectObj and objectObj.text then
+						        if objectObj.text:match('^".*"$') or objectObj.text:match("^'.*'$") then
+						            objectText = objectObj.text
+						        end
+						    end
+						
 						    self.pendingNamecall = {
 						        method = cleanKey,
 						        baseReg = A,
-						        objectText = self:getReg(B)
+						        objectText = objectText
 						    }
 						elseif opName == "CALL" then
 						    local argCount = (B or 0) - 1
@@ -2357,6 +2366,8 @@ local function Decompile(bytecode)
 						            callStr = string_format("game:GetService(%s)", args[1])
 						            self:setReg(A, callStr, PREC.ATOMIC)
 						            self.registers[A].isGlobal = true
+						        elseif object:match('^".*"$') or object:match("^'.*'$") then
+						            callStr = string_format("(%s):%s(%s)", object, methodName, table_concat(args, ", "))
 						        else
 						            callStr = string_format("%s:%s(%s)", object, methodName, table_concat(args, ", "))
 						        end
@@ -2364,7 +2375,7 @@ local function Decompile(bytecode)
 						    else
 						        callStr = string_format("%s(%s)", self:getReg(A, PREC.ATOMIC), table_concat(args, ", "))
 						    end
-						
+						    
 						    local resCount = (C or 0) - 1
 						    if resCount == 0 then 
 						        self:emit(callStr)
