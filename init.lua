@@ -2087,21 +2087,20 @@ local function Decompile(bytecode)
 						elseif opName == "NEWTABLE" then
 						    self.registers[A] = { 
 						        isTable = true, 
-						        dict = {}, 
-						        array = {}, 
 						        text = "v" .. A,
 						        prio = PREC.ATOMIC 
 						    }
-			            elseif opName == "DUPTABLE" then
-			                local const = (self.constants and self.constants[D + 1]) or nil
-			                if const and const.value and const.value.keys then
-			                    local keys = const.value.keys
-			                    local parts = {}
-			                    for _, kIdx in ipairs(keys) do table_insert(parts, self:getConstant(kIdx) .. " = nil") end
-			                    self:setReg(A, "{" .. table_concat(parts, ", ") .. "}", PREC.ATOMIC)
-			                else
-			                    self:setReg(A, "{}", PREC.ATOMIC)
-			                end
+						elseif opName == "DUPTABLE" then
+						    local const = (self.constants and self.constants[D + 1])
+						    
+						    self.registers[A] = {
+						        isTable = true,
+						        text = "v" .. A,
+						        prio = PREC.ATOMIC,
+						        shape = (const and const.value and const.value.keys) 
+						    }
+						    
+						    self:emit("local v" .. A .. " = {}") 
 			            elseif opName == "SETLIST" then
 			                local count = (C or 0) - 1
 			                local tbl = self.pendingTables[A]
@@ -2115,15 +2114,11 @@ local function Decompile(bytecode)
 			            elseif opName == "GETTABLEKS" then
 			                self:setReg(A, self:getReg(B, PREC.ATOMIC) .. formatIndexString(self:getConstant(aux)), PREC.ATOMIC)
 						elseif opName == "SETTABLEKS" then
-						    local tbl = self.registers[B]
+						    local targetName = self:getReg(B)
 						    local key = toIdentifier(self:getConstant(aux))
 						    local value = self:getReg(A)
-						    
-						    if tbl and tbl.isTable then
-						        table.insert(tbl.dict, key .. " = " .. value)
-						    else
-						        self:emit(self:getReg(B, PREC.ATOMIC) .. "." .. key .. " = " .. value)
-						    end
+						
+						    self:emit(targetName .. "." .. key .. " = " .. value)
 			
 			            -- Math & Logic
 			            elseif opName == "ADD" then self:setReg(A, self:getReg(B, PREC.ADD) .. " + " .. self:getReg(C, PREC.ADD), PREC.ADD)
