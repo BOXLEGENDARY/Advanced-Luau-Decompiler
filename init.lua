@@ -1895,16 +1895,24 @@ local function Decompile(bytecode)
 			end
 			
 			function Context:getConstant(kIndex)
-			    local k = (self.constants and self.constants[kIndex + 1]) or nil
-			    if not k then return "nil" end
-			    if type(k) ~= "table" then
-			        if type(k) == "string" then return toEscapedString(k) end
-			        return tostring(k)
+			    local k = (self.constants and self.constants[kIndex + 1])
+			    if k == nil then return "nil" end
+			
+			    if type(k) == "table" then
+			        if k.value ~= nil then
+			            local v = k.value
+			            if type(v) == "string" then return toEscapedString(v) end
+			            if type(v) == "table" then return "{}" end -- กันซ้อน
+			            return tostring(v)
+			        end
+			        return "{}"
 			    end
-			    local v = k.value
-			    if v == nil then return "nil" end
-			    if type(v) == "string" then return toEscapedString(v) end
-			    return tostring(v)
+			
+			    if type(k) == "string" then 
+			        return toEscapedString(k) 
+			    end
+			    
+			    return tostring(k)
 			end
 			
 			function Context:getUpvalue(index)
