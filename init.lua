@@ -1874,6 +1874,7 @@ local function Decompile(bytecode)
 			    self.jumpTargets = {}
 			
 			    self.pendingNamecall = nil
+	    		self.pendingFastcall = nil
 			    self.pendingTables = {}
 			    return self
 			end
@@ -2103,7 +2104,145 @@ local function Decompile(bytecode)
 			            pcall(function() sD = Luau:INSN_sD(ins) end)
 			            local aux = (opInfo.aux and (self.instructions[self.pc + 1] or 0)) or 0
 			
-			            if opName == "LOADNIL" then
+			            if opName == "NOP" or opName == "LOP_NOP" then
+			                -- no-op
+			                self:emit("-- nop")
+			            elseif opName == "BREAK" then
+			                -- debugger break (no direct Luau syntax, emit comment)
+			                self:emit("-- break (debugger)")
+			
+			            -- plain GETTABLE / SETTABLE (key is in register C)
+			            elseif opName == "GETTABLE" then
+			                local tbl = self:getReg(B)
+			                local idx = self:getReg(C, PREC.ATOMIC)
+			                -- if index is a string literal, keep it quoted; otherwise use bracket form
+			                self:setReg(A, string_format("%s[%s]", tbl, idx), PREC.ATOMIC)
+			            elseif opName == "SETTABLE" then
+			                local src = self:getReg(A)
+			                local tbl = self:getReg(B)
+			                local idx = self:getReg(C, PREC.ATOMIC)
+			                self:emit(string_format("%s[%s] = %s", tbl, idx, src))
+			
+			            -- small-integer table access (index encoded as C (index-1))
+			            elseif opName == "GETTABLEN" then
+			                local tbl = self:getReg(B)
+			                local idx = (C or 0) + 1
+			                self:setReg(A, string_format("%s[%d]", tbl, idx), PREC.ATOMIC)
+			            elseif opName == "SETTABLEN" then
+			                local src = self:getReg(A)
+			                local tbl = self:getReg(B)
+			                local idx = (C or 0) + 1
+			                self:emit(string_format("%s[%d] = %s", tbl, idx, src))
+			
+			            -- binary ops with constant RHS (ADDK, SUBK, MULK, DIVK, MODK, POWK)
+			            elseif opName == "ADDK" then
+			                self:setReg(A, self:getReg(B, PREC.ADD) .. " + " .. self:getConstant(C), PREC.ADD)
+			            elseif opName == "SUBK" then
+			                self:setReg(A, self:getReg(B, PREC.ADD) .. " - " .. self:getConstant(C), PREC.ADD)
+			            elseif opName == "MULK" then
+			                self:setReg(A, self:getReg(B, PREC.MUL) .. " * " .. self:getConstant(C), PREC.MUL)
+			            elseif opName == "DIVK" then
+			                self:setReg(A, self:getReg(B, PREC.MUL) .. " / " .. self:getConstant(C), PREC.MUL)
+			            elseif opName == "MODK" then
+			                self:setReg(A, self:getReg(B, PREC.MUL) .. " % " .. self:getConstant(C), PREC.MUL)
+			            elseif opName == "POWK" then
+			                self:setReg(A, self:getReg(B, PREC.POW) .. " ^ " .. self:getConstant(C), PREC.POW)
+			
+			            -- logical with constant (ANDK / ORK)
+			            elseif opName == "ANDK" then
+			                self:setReg(A, self:getReg(B, PREC.AND) .. " and " .. self:getConstant(C), PREC.AND)
+			            elseif opName == "ORK" then
+			                self:setReg(A, self:getReg(B, PREC.OR) .. " or " .. self:getConstant(C), PREC.OR)
+			
+			            -- JUMPBACK: usually loop backedge; safe placeholder (no explicit emission)
+			            elseif opName == "JUMPBACK" then
+			                -- loop backedge/safepoint - nothing to emit, handled by FORN/FORG logic
+			                -- keep for analysis purposes
+			                -- (we don't change scope stack here)
+			
+			            -- NATIVECALL: pseudo-instruction; runtime-only
+			            elseif opName == "NATIVECALL" then
+			                self:emit("-- nativecall (runtime-native function) --")
+			
+			            -- FASTCALL* family: basic placeholder so decompiler won't crash.
+			            -- These are fast builtins; detailed reconstruction needs builtin table and CALL integration.
+			            elseif opName and opName:find("^FASTCALL") then
+			                -- Build pending info (we'll convert to call at CALL)
+			                local variant = opName
+			                local pf = { builtin = A, variant = variant, args = {}, aux = aux, C = C }
+
+			                -- helper to read aux bytes (uses bit32_ helpers present in file)
+							local function aux_byte(val, i)
+							    -- i = 0 -> low byte, i = 1 -> second byte, etc.
+							    if not val then return 0 end
+							    return bit32_band(bit32_rshift(val, 8 * i), 0xff)
+							end
+
+			                if variant == "FASTCALL1" then
+			                    table_insert(pf.args, self:getReg(B))
+			                elseif variant == "FASTCALL2" then
+			                    local arg2 = aux_byte(aux, 0)
+			                    table_insert(pf.args, self:getReg(B))
+			                    table_insert(pf.args, self:getReg(arg2))
+			                elseif variant == "FASTCALL3" then
+			                    local a0 = aux_byte(aux, 0)
+			                    local a1 = aux_byte(aux, 1)
+			                    table_insert(pf.args, self:getReg(B))
+			                    table_insert(pf.args, self:getReg(a0))
+			                    table_insert(pf.args, self:getReg(a1))
+			                elseif variant == "FASTCALL2K" then
+			                    local constIdx = aux or 0
+			                    table_insert(pf.args, self:getReg(B))
+			                    table_insert(pf.args, self:getConstant(constIdx))
+			                elseif variant == "FASTCALL" then
+			                    -- FASTCALL (generic) — actual args often come from subsequent instruction before CALL.
+			                    -- We can't decode them reliably here, so mark pending and allow CALL to read CALL's args.
+			                    -- Leave pf.args empty for now.
+			                else
+			                    -- unknown FASTCALL variant - keep as pending comment
+			                end
+
+			                -- Store pending fastcall: CALL will consume it
+			                self.pendingFastcall = pf
+			                -- optional helpful comment in output to indicate where it was
+			                self:emit(string_format("-- fastcall pending builtin_id=%d variant=%s", pf.builtin or 0, tostring(pf.variant)))
+			
+			            -- No-op / bookkeeping opcodes — emit comment so user can see coverage/capture points
+			            elseif opName == "COVERAGE" then
+			                self:emit(string_format("-- coverage hitcount=%d", aux or 0))
+			            elseif opName == "CAPTURE" then
+			                -- capture type in A, source in B
+			                local capType = A
+			                local src = B
+			                self:emit(string_format("-- capture type=%d src=%s", capType, tostring(src)))
+			            elseif opName == "PREPVARARGS" then
+			                -- prepare varargs: no source code emission needed
+			                self:emit("-- prepvarargs")
+			            elseif opName == "CLOSEUPVALS" then
+			                -- close upvalues for registers >= A
+			                self:emit(string_format("-- closeupvals from register v%d", A))
+			
+			            -- FORNLOOP / FORGLOOP (basic placeholders to avoid crashes)
+			            elseif opName == "FORNLOOP" then
+			                -- normally updates numeric for index and jumps back; no direct emit here
+			                -- we rely on FORNPREP to have emitted the 'for' header
+			            elseif opName == "FORGLOOP" then
+			                -- generic for loop iteration step; already handled by FORGPREP in many cases
+			                -- add a marker for readability if desired:
+			                -- self:emit("-- forgloop iteration")
+			                ;
+			
+			            -- Unknown-but-safe fallback for any other unhandled opcodes
+			            else
+			                -- If we reach here, keep existing behavior (do nothing)
+			                -- But we still handle some explicit unknowns:
+			                if opName == "JUMPX" or opName == "JUMP" then
+			                    -- JUMP handling is partly implemented elsewhere; keep silent here.
+			                else
+			                    -- Emit a comment so missing opcodes are visible in output for debugging.
+			                    self:emit(string_format("-- unhandled opcode: %s (%s)", tostring(opName), tostring(op)))
+			                end
+			            elseif opName == "LOADNIL" then
 			                self:setReg(A, "nil", PREC.ATOMIC)
 			            elseif opName == "LOADB" then
 			                self:setReg(A, (B == 1) and "true" or "false", PREC.ATOMIC)
@@ -2339,7 +2478,6 @@ local function Decompile(bytecode)
 			                    end
 			                    if #regs > 0 then self:emit("local " .. table_concat(regs, ", ") .. " = ...") end
 			                end
-			            elseif opName and opName:find("FASTCALL") then			            
 			            elseif opName == "COVERAGE" or opName == "CAPTURE" or opName == "PREPVARARGS" or opName == "FORNLOOP" or opName == "FORGLOOP" or opName == "CLOSEUPVALS" then
 						elseif opName == "NAMECALL" then
 						    local rawKey = self:getConstant(aux)
@@ -2363,7 +2501,7 @@ local function Decompile(bytecode)
 						        baseReg = A,
 						        objectText = objectText
 						    }
-						elseif opName == "CALL" then
+                        elseif opName == "CALL" then
 						    local argCount = (B or 0) - 1
 						    local args = {}
 						    
@@ -2379,22 +2517,61 @@ local function Decompile(bytecode)
 						    end
 						
 						    local callStr = ""
-						    if isMethod then
-						        local methodName = self.pendingNamecall.method
-						        local object = self.pendingNamecall.objectText
-						        
-						        if object == "game" and methodName == "GetService" and #args == 1 then
-						            callStr = string_format("game:GetService(%s)", args[1])
-						            self:setReg(A, callStr, PREC.ATOMIC)
-						        elseif object:match('^".*"$') or object:match("^'.*'$") then
-						            callStr = string_format("(%s):%s(%s)", object, methodName, table_concat(args, ", "))
-						        else
-						            callStr = string_format("%s:%s(%s)", object, methodName, table_concat(args, ", "))
+
+						    -- Prefer pending FASTCALL (if present) to build a builtin call
+						    if self.pendingFastcall then
+						        local pf = self.pendingFastcall
+						        local pfargs = {}
+
+						        -- use any args collected by FASTCALL handler first
+						        for _, a in ipairs(pf.args) do table_insert(pfargs, a) end
+
+						        -- fallback: append normal CALL args (if any)
+						        if #args > 0 then
+						            for _, a in ipairs(args) do table_insert(pfargs, a) end
 						        end
-						        self.pendingNamecall = nil
+
+								-- build call string from pending FASTCALL using Luau builtin names
+								do
+								    local builtinId = pf.builtin or 0
+								    local builtinName = nil
+								
+								    -- try to get readable builtin name from Luau (fall back to placeholder)
+								    if Luau and type(Luau.GetBuiltinInfo) == "function" then
+								        pcall(function() builtinName = Luau:GetBuiltinInfo(builtinId) end)
+								    end
+								
+								    if builtinName and builtinName ~= "none" then
+								        -- builtinName often includes namespace (eg. "math.abs" or "bit32.band")
+								        -- just print it directly as a regular function call
+								        callStr = string_format("%s(%s)", builtinName, table_concat(pfargs, ", "))
+								    else
+								        -- fallback: keep numeric placeholder if mapping not available
+								        callStr = string_format("builtin_%d(%s)", builtinId, table_concat(pfargs, ", "))
+								    end
+								
+								    -- consume pending fastcall
+								    self.pendingFastcall = nil
+								end
 						    else
-						        local funcName = self.registers[A] and self.registers[A].text or ("v" .. A)
-						        callStr = string_format("%s(%s)", funcName, table_concat(args, ", "))
+						        -- normal method or function call (existing behavior)
+						        if isMethod then
+						            local methodName = self.pendingNamecall.method
+						            local object = self.pendingNamecall.objectText
+						            
+						            if object == "game" and methodName == "GetService" and #args == 1 then
+						                callStr = string_format("game:GetService(%s)", args[1])
+						                self:setReg(A, callStr, PREC.ATOMIC)
+						            elseif object:match('^".*"$') or object:match("^'.*'$") then
+						                callStr = string_format("(%s):%s(%s)", object, methodName, table_concat(args, ", "))
+						            else
+						                callStr = string_format("%s:%s(%s)", object, methodName, table_concat(args, ", "))
+						            end
+						            self.pendingNamecall = nil
+						        else
+						            local funcName = self.registers[A] and self.registers[A].text or ("v" .. A)
+						            callStr = string_format("%s(%s)", funcName, table_concat(args, ", "))
+						        end
 						    end
 						    
 						    local resCount = (C or 0) - 1
