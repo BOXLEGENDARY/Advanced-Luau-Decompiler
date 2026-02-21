@@ -1764,6 +1764,7 @@ local function Decompile(bytecode)
 			finalResult = processResult(result)
 		else -- assume optdec - optimized decompiler
 			local Lifter = {}
+			Lifter.Cache = {}
 			
 			local table_insert = table.insert
 			local table_concat = table.concat
@@ -2732,6 +2733,7 @@ local function Decompile(bytecode)
 			    local ctx = Context.new(proto, protoId or "main", depth)
 			    local ok, res = pcall(function() return ctx:process() end)
 			    if not ok then return "-- Decompiler Error: \n-- " .. tostring(res) .. "\n" .. table_concat(ctx.lines, "\n") end
+			    Lifter.Cache[proto] = res
 			    return res
 			end
 			
