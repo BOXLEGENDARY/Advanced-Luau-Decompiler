@@ -1784,18 +1784,33 @@ local function Decompile(bytecode)
 			--- do not touch only developer.
 			local DEBUG_OPCODES = true
 			
-			-- Reserved keywords for identifier validation
 			local RESERVED_KEYWORDS = {
 			    ["and"] = true, ["break"] = true, ["do"] = true, ["else"] = true,
 			    ["elseif"] = true, ["end"] = true, ["false"] = true, ["for"] = true,
 			    ["function"] = true, ["if"] = true, ["in"] = true, ["local"] = true,
 			    ["nil"] = true, ["not"] = true, ["or"] = true, ["repeat"] = true,
 			    ["return"] = true, ["then"] = true, ["true"] = true, ["until"] = true, 
-			    ["while"] = true, ["continue"] = true, ["export"] = true,
-			    ["type"] = true, ["typeof"] = true, ["self"] = true,
-			    ["any"] = true, ["boolean"] = true, ["number"] = true, 
-			    ["string"] = true, ["thread"] = true, ["unknown"] = true, 
-			    ["void"] = true, ["never"] = true
+			    ["while"] = true, ["continue"] = true,
+			    ["export"] = true, ["type"] = true, ["typeof"] = true, ["self"] = true,
+			    ["as"] = true,
+			    ["any"] = true, ["unknown"] = true, ["never"] = true, ["void"] = true,
+			    ["boolean"] = true, ["number"] = true, ["string"] = true, ["thread"] = true,
+			    ["buffer"] = true,
+			    ["vector"] = true,
+			}
+
+			local GLOBALS = {
+			    ["game"] = true, ["workspace"] = true, ["script"] = true, ["Enum"] = true,
+			    ["shared"] = true, ["_G"] = true, ["_VERSION"] = true,
+			    ["task"] = true, ["math"] = true, ["string"] = true, ["table"] = true,
+			    ["os"] = true, ["coroutine"] = true, ["debug"] = true, ["utf8"] = true,
+			    ["bit32"] = true, ["buffer"] = true, ["vector"] = true,
+			    ["print"] = true, ["warn"] = true, ["error"] = true, ["assert"] = true,
+			    ["typeof"] = true, ["type"] = true, ["pcall"] = true, ["xpcall"] = true,
+			    ["spawn"] = true, ["delay"] = true, ["wait"] = true, ["tick"] = true,
+			    ["tonumber"] = true, ["tostring"] = true, ["require"] = true,
+			    ["getfenv"] = true, ["setfenv"] = true, ["next"] = true, 
+			    ["pairs"] = true, ["ipairs"] = true, ["select"] = true, ["unpack"] = true
 			}
 			
 			local function isValidIdentifier(str)
@@ -2122,8 +2137,10 @@ local function Decompile(bytecode)
 						    end
 						
 						    self:setReg(A, path, PREC.DOT)
+						
+						    local root = path:match("^([^%.]+)") 
 						    
-						    if path == "game" or path == "string" or path == "math" or path == "table" then
+						    if GLOBALS[root] then
 						        if self.registers[A] then
 						            self.registers[A].isGlobal = true
 						        end
