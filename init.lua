@@ -2359,7 +2359,8 @@ local function Decompile(bytecode)
 						    local const = (self.constants and self.constants[D + 1])
 						    self.registers[A] = {
 						        isTable = true,
-						        text = "v" .. A,
+						        text = "{}",
+						        fields = {},
 						        prio = PREC.ATOMIC,
 						        shape = (const and const.value and const.value.keys)
 						    }
@@ -2394,18 +2395,35 @@ local function Decompile(bytecode)
 						        forceVariableName = false
 						    }
 						    self.tempRegisters[A] = true
-			            elseif opName == "SETTABLEKS" then
-			                local targetName = self:getReg(B)
-			                local rawKey = self:getConstant(aux)
-			                local value = self:getReg(A)
-			                
-			                local cleanKey = rawKey:gsub('^"', ''):gsub('"$', '')
-			            
-			                if isValidIdentifier(cleanKey) then
-			                    self:emit(targetName .. "." .. cleanKey .. " = " .. value)
-			                else
-			                    self:emit(string.format('%s[%q] = %s', targetName, cleanKey, value))
-			                end
+						elseif opName == "SETTABLEKS" then
+						    local targetReg = self.registers[B]
+						    local value = self:getReg(A)
+						    local rawKey = self:getConstant(aux)
+						    local cleanKey = rawKey:gsub('^"', ''):gsub('"$', '')
+						
+						    if targetReg and targetReg.isTable and not self.declaredLocals[B] then
+						        targetReg.fields = targetReg.fields or {}
+						        targetReg.fields[cleanKey] = value
+						        
+						        local kvPairs = {}
+						        for k, v in pairs(targetReg.fields) do
+						            if isValidIdentifier(k) then
+						                table.insert(kvPairs, string.format("%s = %s", k, v))
+						            else
+						                table.insert(kvPairs, string.format("[%q] = %s", k, v))
+						            end
+						        end
+						        
+						        targetReg.text = "{" .. table_concat(kvPairs, ", ") .. "}"
+						        targetReg.isInlineable = true
+						    else
+						        local targetName = self:getReg(B)
+						        if isValidIdentifier(cleanKey) then
+						            self:emit(targetName .. "." .. cleanKey .. " = " .. value)
+						        else
+						            self:emit(string.format('%s[%q] = %s', targetName, cleanKey, value))
+						        end
+						    end
 			
 			            -- Math & Logic
 			            elseif opName == "ADD" then self:setReg(A, self:getReg(B, PREC.ADD) .. " + " .. self:getReg(C, PREC.ADD), PREC.ADD)
