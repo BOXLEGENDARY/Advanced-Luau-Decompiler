@@ -1808,14 +1808,6 @@ local function Decompile(bytecode)
 			    return true
 			end
 			
-			local usedGlobals = {}
-			
-			local function isValidGlobal(name)
-			    if type(name) ~= "string" then return false end
-			    if GLOBALS[name] then return true end
-			    return isValidIdentifier(name)
-			end
-			
 			local function toIdentifier(str)
 			    if type(str) == "string" then
 			        local bare = str:match('^"([%a_][%w_]*)"$')
