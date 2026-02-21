@@ -1782,7 +1782,7 @@ local function Decompile(bytecode)
 			Context.__index = Context
 			
 			--- do not touch only developer.
-			local DEBUG_OPCODES = true
+			local DEBUG_OPCODES = false
 			
 			local RESERVED_KEYWORDS = {
 			    ["and"] = true, ["break"] = true, ["do"] = true, ["else"] = true,
@@ -2241,7 +2241,7 @@ local function Decompile(bytecode)
 			            elseif opName == "FORGLOOP" then
 			                -- generic for loop iteration step; already handled by FORGPREP in many cases
 			                -- add a marker for readability if desired:
-			                -- self:emit("-- forgloop iteration")
+			                self:emit("-- forgloop iteration")
 			                
 			
 			            -- Unknown-but-safe fallback for any other unhandled opcodes
