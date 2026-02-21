@@ -1,7 +1,7 @@
 # Advanced Luau Decompiler
 i just update or fix something
 
-optdec in process
+optdec work in process
 
 ---
 ## Loadstring
