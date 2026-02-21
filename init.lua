@@ -2202,10 +2202,22 @@ local function Decompile(bytecode)
 			                    -- unknown FASTCALL variant - keep as pending comment
 			                end
 
-			                -- Store pending fastcall: CALL will consume it
-			                self.pendingFastcall = pf
-			                -- optional helpful comment in output to indicate where it was
-			                self:emit(string_format("-- fastcall pending builtin_id=%d variant=%s", pf.builtin or 0, tostring(pf.variant)))
+							-- Store pending fastcall: CALL will consume it
+							self.pendingFastcall = pf
+							
+							-- emit nicer debug comment with builtin name if available
+							do
+							    local bname = nil
+							    local ok = pcall(function()
+							        if Luau and type(Luau.GetBuiltinInfo) == "function" then bname = Luau:GetBuiltinInfo(pf.builtin or 0) end
+							    end)
+							
+							    if bname and bname ~= "none" then
+							        self:emit(string_format("-- fastcall pending %s variant=%s", bname, tostring(pf.variant)))
+							    else
+							        self:emit(string_format("-- fastcall pending builtin_id=%d variant=%s", pf.builtin or 0, tostring(pf.variant)))
+							    end
+							end
 			
 			            -- No-op / bookkeeping opcodes — emit comment so user can see coverage/capture points
 			            elseif opName == "COVERAGE" then
@@ -2230,7 +2242,7 @@ local function Decompile(bytecode)
 			                -- generic for loop iteration step; already handled by FORGPREP in many cases
 			                -- add a marker for readability if desired:
 			                -- self:emit("-- forgloop iteration")
-			                ;
+			                
 			
 			            -- Unknown-but-safe fallback for any other unhandled opcodes
 			            else
