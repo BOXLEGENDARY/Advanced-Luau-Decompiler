@@ -1903,17 +1903,17 @@ local function Decompile(bytecode)
 			    local reg = self.registers[index]
 			    if not reg then return "v" .. index end
 			
-			    if self.declaredLocals[index] or reg.forceVariableName then
+			    if self.declaredLocals[index] or reg.forceVariableName or reg.isVariable then
 			        return "v" .. index
 			    end
 			
-			    if reg.isGlobal then
+			    if reg.isGlobal and not self.declaredLocals[index] then
 			        return reg.text
 			    end
 			
 			    local name = reg.text or ("v" .. index)
 			    
-			    if name == "{}" then
+			    if name == "{}" or name == "" then
 			        name = "v" .. index
 			    end
 			
@@ -1941,6 +1941,7 @@ local function Decompile(bytecode)
 			        text = regName, 
 			        prio = PREC.ATOMIC, 
 			        isGlobal = false,
+			        isVariable = true,
 			        forceVariableName = false 
 			    }
 
@@ -1952,6 +1953,10 @@ local function Decompile(bytecode)
 			    end
 			    
 			    self.tempRegisters[index] = false
+			    
+			    if self.pendingNamecall and self.pendingNamecall.baseReg == index then
+			        self.pendingNamecall = nil
+			    end
 			end
 			
 			function Context:buildTable(index)
@@ -2381,7 +2386,6 @@ local function Decompile(bytecode)
 						        if object == "game" and methodName == "GetService" and #args == 1 then
 						            callStr = string_format("game:GetService(%s)", args[1])
 						            self:setReg(A, callStr, PREC.ATOMIC)
-						            self.registers[A].isGlobal = true
 						        elseif object:match('^".*"$') or object:match("^'.*'$") then
 						            callStr = string_format("(%s):%s(%s)", object, methodName, table_concat(args, ", "))
 						        else
@@ -2389,27 +2393,29 @@ local function Decompile(bytecode)
 						        end
 						        self.pendingNamecall = nil
 						    else
-						        callStr = string_format("%s(%s)", self:getReg(A, PREC.ATOMIC), table_concat(args, ", "))
+						        local funcName = self.registers[A] and self.registers[A].text or ("v" .. A)
+						        callStr = string_format("%s(%s)", funcName, table_concat(args, ", "))
 						    end
 						    
 						    local resCount = (C or 0) - 1
 						    if resCount == 0 then 
 						        self:emit(callStr)
 						    elseif resCount == 1 then
-						        if self.registers[A] and self.registers[A].isGlobal then
-						            self:emit("local v" .. A .. " = " .. callStr)
-						            self:setReg(A, "v" .. A, PREC.ATOMIC)
-						            self.declaredLocals[A] = true
-						        else
-						            self:assignReg(A, callStr)
-						            if self.registers[A] then self.registers[A].isVariable = true end
+						        self:assignReg(A, callStr)
+						        
+						        if self.registers[A] then 
+						            self.registers[A].isVariable = true 
+						            self.registers[A].isGlobal = false
+						            self.registers[A].text = "v" .. A
 						        end
 						    else
 						        local vars = {}
 						        for i = 0, (resCount > 0 and resCount - 1 or 0) do
 						            local regIdx = A + i
-						            table_insert(vars, "v" .. regIdx)
-						            self:setReg(regIdx, "v" .. regIdx, PREC.ATOMIC)
+						            local varName = "v" .. regIdx
+						            table_insert(vars, varName)
+						            
+						            self.registers[regIdx] = { text = varName, prio = PREC.ATOMIC, isGlobal = false, isVariable = true }
 						            self.declaredLocals[regIdx] = true
 						        end
 						        self:emit("local " .. table_concat(vars, ", ") .. " = " .. callStr)
