@@ -1964,6 +1964,15 @@ local function Decompile(bytecode)
 			        end
 			    end
 			
+				function Context:buildTable(index)
+				    local reg = self.registers[index]
+				    if reg and reg.isTable then
+				        local content = table.concat(reg.dict, ", ")
+				        return "{" .. content .. "}"
+				    end
+				    return self:getReg(index)
+				end
+
 				while self.pc <= self.length do
 				    local pc = self.pc
 				
@@ -2057,9 +2066,14 @@ local function Decompile(bytecode)
 			            elseif opName == "SETUPVAL" then
 			                self:emit(self:getUpvalue(B) .. " = " .. self:getReg(A))
 			
-			            elseif opName == "NEWTABLE" then
-			                self.pendingTables[A] = { items = {} }
-			                self:setReg(A, "{}", PREC.ATOMIC)
+						elseif opName == "NEWTABLE" then
+						    self.registers[A] = { 
+						        isTable = true, 
+						        dict = {}, 
+						        array = {}, 
+						        text = "v" .. A,
+						        prio = PREC.ATOMIC 
+						    }
 			            elseif opName == "DUPTABLE" then
 			                local const = (self.constants and self.constants[D + 1]) or nil
 			                if const and const.value and const.value.keys then
@@ -2082,8 +2096,16 @@ local function Decompile(bytecode)
 			
 			            elseif opName == "GETTABLEKS" then
 			                self:setReg(A, self:getReg(B, PREC.ATOMIC) .. formatIndexString(self:getConstant(aux)), PREC.ATOMIC)
-			            elseif opName == "SETTABLEKS" then
-			                self:emit(self:getReg(B, PREC.ATOMIC) .. formatIndexString(self:getConstant(aux)) .. " = " .. self:getReg(A))
+						elseif opName == "SETTABLEKS" then
+						    local tbl = self.registers[B]
+						    local key = toIdentifier(self:getConstant(aux))
+						    local value = self:getReg(A)
+						    
+						    if tbl and tbl.isTable then
+						        table.insert(tbl.dict, key .. " = " .. value)
+						    else
+						        self:emit(self:getReg(B, PREC.ATOMIC) .. "." .. key .. " = " .. value)
+						    end
 			
 			            -- Math & Logic
 			            elseif opName == "ADD" then self:setReg(A, self:getReg(B, PREC.ADD) .. " + " .. self:getReg(C, PREC.ADD), PREC.ADD)
