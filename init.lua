@@ -1784,6 +1784,54 @@ local function Decompile(bytecode)
 			--- do not touch only developer.
 			local DEBUG_OPCODES = true
 			
+			-- Reserved keywords for identifier validation
+			local RESERVED_KEYWORDS = {
+			    ["and"] = true, ["break"] = true, ["do"] = true, ["else"] = true,
+			    ["elseif"] = true, ["end"] = true, ["false"] = true, ["for"] = true,
+			    ["function"] = true, ["if"] = true, ["in"] = true, ["local"] = true,
+			    ["nil"] = true, ["not"] = true, ["or"] = true, ["repeat"] = true,
+			    ["return"] = true, ["then"] = true, ["true"] = true, ["until"] = true, 
+			    ["while"] = true, ["continue"] = true, ["export"] = true,
+			    ["type"] = true, ["typeof"] = true, ["self"] = true,
+			    ["any"] = true, ["boolean"] = true, ["number"] = true, 
+			    ["string"] = true, ["thread"] = true, ["unknown"] = true, 
+			    ["void"] = true, ["never"] = true
+			}
+			
+			local function isValidIdentifier(str)
+			    if type(str) ~= "string" or str == "" then return false end
+			    if str:match("^%d") then return false end
+			    if not str:match("^[%w_]+$") then return false end
+			    if RESERVED_KEYWORDS[str] then return false end
+			    return true
+			end
+			
+			local function toIdentifier(str)
+			    if type(str) == "string" then
+			        local bare = str:match('^"([%a_][%w_]*)"$')
+			        if bare then return bare end
+			    end
+			    return str
+			end
+			
+			local function formatIndexString(key)
+			    if type(key) == "string" then
+			        local bare = key:match('^"([%a_][%w_]*)"$')
+			        if bare then return "." .. bare end
+			    end
+			    return "[" .. tostring(key) .. "]"
+			end
+			
+			local function toEscapedString(str)
+			    if type(str) ~= "string" then return tostring(str) end
+			    str = string.gsub(str, "\\", "\\\\")
+			    str = string.gsub(str, "\n", "\\n")
+			    str = string.gsub(str, "\r", "\\r")
+			    str = string.gsub(str, "\t", "\\t")
+			    str = string.gsub(str, "\"", "\\\"")
+			    return "\"" .. str .. "\""
+			end
+			
 			function Context.new(proto, protoId, depth)
 			    local self = setmetatable({}, Context)
 			    self.proto = proto or {}
@@ -1816,6 +1864,7 @@ local function Decompile(bytecode)
 			    if not text then return end
 			    table_insert(self.lines, string_rep(INDENT_STRING, self.indentLevel) .. text)
 			end
+			
 			function Context:indent() self.indentLevel = self.indentLevel + 1 end
 			function Context:outdent() self.indentLevel = math.max(0, self.indentLevel - 1) end
 			
@@ -1829,26 +1878,16 @@ local function Decompile(bytecode)
 			    return nil
 			end
 			
-			local function toIdentifier(str)
-			    if type(str) == "string" then
-			        local bare = str:match('^"([%a_][%w_]*)"$')
-			        if bare then return bare end
-			    end
-			    return str
-			end
-			
 			function Context:getReg(index, minPrio)
 			    local debugName = self:getDebugLocalName(index)
 			    if debugName then return debugName end
 			
 			    local reg = self.registers[index]
-			    
 			    if not reg then 
 			        return "v" .. index 
 			    end
 			
 			    local name = reg.text
-			
 			    if name == "{}" then
 			        name = "v" .. index
 			    end
@@ -1886,22 +1925,13 @@ local function Decompile(bytecode)
 			    self.tempRegisters[index] = false
 			end
 			
-			local function formatIndexString(key)
-			    if type(key) == "string" then
-			        local bare = key:match('^"([%a_][%w_]*)"$')
-			        if bare then return "." .. bare end
+			function Context:buildTable(index)
+			    local reg = self.registers[index]
+			    if reg and reg.isTable then
+			        local content = table_concat(reg.dict, ", ")
+			        return "{" .. content .. "}"
 			    end
-			    return "[" .. tostring(key) .. "]"
-			end
-			
-			local function toEscapedString(str)
-			    if type(str) ~= "string" then return tostring(str) end
-			    str = string.gsub(str, "\\", "\\\\")
-			    str = string.gsub(str, "\n", "\\n")
-			    str = string.gsub(str, "\r", "\\r")
-			    str = string.gsub(str, "\t", "\\t")
-			    str = string.gsub(str, "\"", "\\\"")
-			    return "\"" .. str .. "\""
+			    return self:getReg(index)
 			end
 			
 			function Context:getConstant(kIndex)
@@ -1912,7 +1942,7 @@ local function Decompile(bytecode)
 			        if k.value ~= nil then
 			            local v = k.value
 			            if type(v) == "string" then return toEscapedString(v) end
-			            if type(v) == "table" then return "{}" end -- กันซ้อน
+			            if type(v) == "table" then return "{}" end
 			            return tostring(v)
 			        end
 			        return "{}"
@@ -1982,77 +2012,39 @@ local function Decompile(bytecode)
 			        end
 			    end
 			
-				function Context:buildTable(index)
-				    local reg = self.registers[index]
-				    if reg and reg.isTable then
-				        local content = table.concat(reg.dict, ", ")
-				        return "{" .. content .. "}"
-				    end
-				    return self:getReg(index)
-				end
-
-				local function isValidIdentifier(str)
-				    if type(str) ~= "string" or str == "" then return false end
-				    
-				    if str:match("^%d") then return false end
-				    
-				    if not str:match("^[%w_]+$") then return false end
-				    
-				local reserved = {
-					    ["and"] = true, ["break"] = true, ["do"] = true, ["else"] = true,
-					    ["elseif"] = true, ["end"] = true, ["false"] = true, ["for"] = true,
-					    ["function"] = true, ["if"] = true, ["in"] = true, ["local"] = true,
-					    ["nil"] = true, ["not"] = true, ["or"] = true, ["repeat"] = true,
-					    ["return"] = true, ["then"] = true, ["true"] = true, ["until"] = true, 
-					    ["while"] = true,
-					    ["continue"] = true,
-					    ["export"] = true,
-					    ["type"] = true,
-					    ["typeof"] = true,
-					    ["self"] = true,
-					    ["any"] = true, ["boolean"] = true, ["number"] = true, 
-					    ["string"] = true, ["thread"] = true, ["unknown"] = true, 
-					    ["void"] = true, ["never"] = true
-					}
-				    
-				    if reserved[str] then return false end
-				    
-				    return true
-				end
-
-				while self.pc <= self.length do
-				    local pc = self.pc
-				
-				    for i = #self.scopeStack, 1, -1 do
-				        local scope = self.scopeStack[i]
-				        if pc >= (scope.endPC or math.huge) then
-				            self:outdent()
-				            
-				            local hasElse = false
-				            if scope.type == "IF" then
-				                local nextIns = self.instructions[pc - 1]
-				                if nextIns then
-				                    local ok, op = pcall(function() return Luau:INSN_OP(nextIns) end)
-				                    if ok and LuauOpCode[op] and LuauOpCode[op].name == "JUMP" then
-				                        local n_sD = Luau:INSN_sD(nextIns)
-				                        local elseEnd = pc + n_sD
-				                        if elseEnd > pc then
-				                            self:emit("else")
-				                            self:indent()
-				                            scope.type = "ELSE"
-				                            scope.endPC = elseEnd
-				                            hasElse = true
-				                        end
-				                    end
-				                end
-				            end
-				            
-				            if not hasElse then
-				                self:emit("end")
-				                table_remove(self.scopeStack, i)
-				            end
-				        end
-				    end
+			    while self.pc <= self.length do
+			        local pc = self.pc
+			    
+			        for i = #self.scopeStack, 1, -1 do
+			            local scope = self.scopeStack[i]
+			            if pc >= (scope.endPC or math.huge) then
+			                self:outdent()
+			                
+			                local hasElse = false
+			                if scope.type == "IF" then
+			                    local nextIns = self.instructions[pc - 1]
+			                    if nextIns then
+			                        local ok, op = pcall(function() return Luau:INSN_OP(nextIns) end)
+			                        if ok and LuauOpCode[op] and LuauOpCode[op].name == "JUMP" then
+			                            local n_sD = Luau:INSN_sD(nextIns)
+			                            local elseEnd = pc + n_sD
+			                            if elseEnd > pc then
+			                                self:emit("else")
+			                                self:indent()
+			                                scope.type = "ELSE"
+			                                scope.endPC = elseEnd
+			                                hasElse = true
+			                            end
+			                        end
+			                    end
+			                end
+			                
+			                if not hasElse then
+			                    self:emit("end")
+			                    table_remove(self.scopeStack, i)
+			                end
+			            end
+			        end
 			
 			        local ins = self.instructions[self.pc]
 			        if not ins then break end
@@ -2079,11 +2071,11 @@ local function Decompile(bytecode)
 			
 			            if opName == "LOADNIL" then
 			                self:setReg(A, "nil", PREC.ATOMIC)
-						elseif opName == "LOADB" then
-						    self:setReg(A, (B == 1) and "true" or "false", PREC.ATOMIC)
-						    if C > 0 then
-						        self.pc = self.pc + C
-						    end
+			            elseif opName == "LOADB" then
+			                self:setReg(A, (B == 1) and "true" or "false", PREC.ATOMIC)
+			                if C > 0 then
+			                    self.pc = self.pc + C
+			                end
 			            elseif opName == "LOADN" then
 			                self:setReg(A, tostring(sD), PREC.ATOMIC)
 			            elseif opName == "LOADK" then
@@ -2100,50 +2092,49 @@ local function Decompile(bytecode)
 			                local globalKey = toIdentifier(self:getConstant(aux ~= 0 and aux or D))
 			                if LIST_USED_GLOBALS and isValidGlobal and isValidGlobal(globalKey) then table_insert(usedGlobals, globalKey) end
 			                self:emit(globalKey .. " = " .. self:getReg(A))
-						elseif opName == "GETIMPORT" then
-						    local count = bit32_rshift(aux, 30)
-						    local id0 = bit32_band(bit32_rshift(aux, 20), 0x3FF)
-						    local id1 = bit32_band(bit32_rshift(aux, 10), 0x3FF)
-						    local id2 = bit32_band(aux, 0x3FF)
-						
-						    local function getClean(idx)
-						        local c = self:getConstant(idx)
-						        return c:gsub('^"', ''):gsub('"$', '')
-						    end
-						
-						    local path = ""
-						    if count == 1 then
-						        path = getClean(id0)
-						    elseif count == 2 then
-						        path = getClean(id0) .. "." .. getClean(id1)
-						    elseif count == 3 then
-						        path = getClean(id0) .. "." .. getClean(id1) .. "." .. getClean(id2)
-						    end
-						
-						    self:setReg(A, path, PREC.ATOMIC)
+			            elseif opName == "GETIMPORT" then
+			                local count = bit32_rshift(aux, 30)
+			                local id0 = bit32_band(bit32_rshift(aux, 20), 0x3FF)
+			                local id1 = bit32_band(bit32_rshift(aux, 10), 0x3FF)
+			                local id2 = bit32_band(aux, 0x3FF)
+			            
+			                local function getClean(idx)
+			                    local c = self:getConstant(idx)
+			                    return c:gsub('^"', ''):gsub('"$', '')
+			                end
+			            
+			                local path = ""
+			                if count == 1 then
+			                    path = getClean(id0)
+			                elseif count == 2 then
+			                    path = getClean(id0) .. "." .. getClean(id1)
+			                elseif count == 3 then
+			                    path = getClean(id0) .. "." .. getClean(id1) .. "." .. getClean(id2)
+			                end
+			            
+			                self:setReg(A, path, PREC.ATOMIC)
 			            elseif opName == "GETUPVAL" then
 			                self:setReg(A, self:getUpvalue(B), PREC.ATOMIC)
 			            elseif opName == "SETUPVAL" then
 			                self:emit(self:getUpvalue(B) .. " = " .. self:getReg(A))
 			
-						elseif opName == "NEWTABLE" then
-						    self.registers[A] = { 
-						        isTable = true, 
-						        text = "v" .. A,
-						        dict = {},
-						        prio = PREC.ATOMIC 
-						    }
-						    self.tempRegisters[A] = true
-						elseif opName == "DUPTABLE" then
-						    local const = (self.constants and self.constants[D + 1])
-						    
-						    self.registers[A] = {
-						        isTable = true,
-						        text = "v" .. A,
-						        prio = PREC.ATOMIC,
-						        shape = (const and const.value and const.value.keys)
-						    }
-						    self.tempRegisters[A] = true			
+			            elseif opName == "NEWTABLE" then
+			                self.registers[A] = { 
+			                    isTable = true, 
+			                    text = "v" .. A,
+			                    dict = {},
+			                    prio = PREC.ATOMIC 
+			                }
+			                self.tempRegisters[A] = true
+			            elseif opName == "DUPTABLE" then
+			                local const = (self.constants and self.constants[D + 1])
+			                self.registers[A] = {
+			                    isTable = true,
+			                    text = "v" .. A,
+			                    prio = PREC.ATOMIC,
+			                    shape = (const and const.value and const.value.keys)
+			                }
+			                self.tempRegisters[A] = true			
 			            elseif opName == "SETLIST" then
 			                local count = (C or 0) - 1
 			                local tbl = self.pendingTables[A]
@@ -2154,29 +2145,28 @@ local function Decompile(bytecode)
 			                    self:setReg(A, "{" .. table_concat(tbl.items, ", ") .. "}", PREC.ATOMIC)
 			                end
 			
-						elseif opName == "GETTABLEKS" then
-						    local target = "v" .. A
-						    local source = self:getReg(B)
-						    local rawKey = self:getConstant(aux)
-						    local cleanKey = rawKey:gsub('^"', ''):gsub('"$', '')
-						
-						    if isValidIdentifier(cleanKey) then
-						        self:setReg(A, source .. "." .. cleanKey, PREC.ATOMIC)
-						    else
-						        self:setReg(A, string.format('%s[%q]', source, cleanKey), PREC.ATOMIC)
-						    end
-						elseif opName == "SETTABLEKS" then
-						    local targetName = self:getReg(B)
-						    local rawKey = self:getConstant(aux)
-						    local value = self:getReg(A)
-						    
-						    local cleanKey = rawKey:gsub('^"', ''):gsub('"$', '')
-						
-						    if isValidIdentifier(cleanKey) then
-						        self:emit(targetName .. "." .. cleanKey .. " = " .. value)
-						    else
-						        self:emit(string.format('%s[%q] = %s', targetName, cleanKey, value))
-						    end
+			            elseif opName == "GETTABLEKS" then
+			                local source = self:getReg(B)
+			                local rawKey = self:getConstant(aux)
+			                local cleanKey = rawKey:gsub('^"', ''):gsub('"$', '')
+			            
+			                if isValidIdentifier(cleanKey) then
+			                    self:setReg(A, source .. "." .. cleanKey, PREC.ATOMIC)
+			                else
+			                    self:setReg(A, string.format('%s[%q]', source, cleanKey), PREC.ATOMIC)
+			                end
+			            elseif opName == "SETTABLEKS" then
+			                local targetName = self:getReg(B)
+			                local rawKey = self:getConstant(aux)
+			                local value = self:getReg(A)
+			                
+			                local cleanKey = rawKey:gsub('^"', ''):gsub('"$', '')
+			            
+			                if isValidIdentifier(cleanKey) then
+			                    self:emit(targetName .. "." .. cleanKey .. " = " .. value)
+			                else
+			                    self:emit(string.format('%s[%q] = %s', targetName, cleanKey, value))
+			                end
 			
 			            -- Math & Logic
 			            elseif opName == "ADD" then self:setReg(A, self:getReg(B, PREC.ADD) .. " + " .. self:getReg(C, PREC.ADD), PREC.ADD)
@@ -2241,14 +2231,14 @@ local function Decompile(bytecode)
 			                self:emit(string_format("if %s %s %s then", self:getReg(A, PREC.COMPARE), sign, val))
 			                table_insert(self.scopeStack, { type = "IF", endPC = self.pc + 1 + (sD or 0) })
 			                self:indent()
-						elseif opName == "JUMP" or opName == "JUMPX" then
-						    local t = self.pc + 1 + sD
-						    local currentScope = self.scopeStack[#self.scopeStack]
-						    
-						    if sD < 0 then
-						    elseif currentScope and currentScope.type == "LOOP" and t >= currentScope.endPC then
-						        self:emit("break")
-						    end
+			            elseif opName == "JUMP" or opName == "JUMPX" then
+			                local t = self.pc + 1 + sD
+			                local currentScope = self.scopeStack[#self.scopeStack]
+			                
+			                if sD < 0 then
+			                elseif currentScope and currentScope.type == "LOOP" and t >= currentScope.endPC then
+			                    self:emit("break")
+			                end
 			
 			            -- Loops
 			            elseif opName == "FORNPREP" then
@@ -2282,52 +2272,52 @@ local function Decompile(bytecode)
 			                end
 			            elseif opName and opName:find("FASTCALL") then			            
 			            elseif opName == "COVERAGE" or opName == "CAPTURE" or opName == "PREPVARARGS" or opName == "FORNLOOP" or opName == "FORGLOOP" or opName == "CLOSEUPVALS" then
-						elseif opName == "NAMECALL" then
-						    local rawKey = self:getConstant(aux)
-						    local cleanKey = rawKey:gsub('^"', ''):gsub('"$', '')
-						    
-						    self.namecall = {
-						        method = cleanKey,
-						        baseReg = A
-						    }
-						elseif opName == "CALL" then
-						    local argCount = (B or 0) - 1
-						    local args = {}
-						    
-						    local isMethod = (self.namecall ~= nil)
-						    local startOffset = isMethod and 2 or 1 
-						
-						    if argCount == -1 then 
-						        table_insert(args, "...")
-						    elseif argCount > 0 then
-						        for i = startOffset, argCount do
-						            table_insert(args, self:getReg(A + i))
-						        end
-						    end
-						
-						    local callStr
-						    if isMethod then
-						        local methodName = (type(self.namecall) == "table") and self.namecall.method or self.namecall
-						        local object = self:getReg(A + 1) -- Object ตัวจริงคือ A+1
-						        
-						        callStr = string_format("%s:%s(%s)", object, methodName, table_concat(args, ", "))
-						        self.namecall = nil
-						    else
-						        callStr = string_format("%s(%s)", self:getReg(A, PREC.ATOMIC), table_concat(args, ", "))
-						    end
-						
-						    local resCount = (C or 0) - 1
-						    if resCount == 0 then 
-						        self:emit(callStr)
-						    elseif resCount == 1 then 
-						        self:assignReg(A, callStr)
-						    else
-						        local vars = {}
-						        for i = 0, (resCount > 0 and resCount - 1 or 0) do
-						            table_insert(vars, self:getReg(A + i))
-						        end
-						        self:emit("local " .. table_concat(vars, ", ") .. " = " .. callStr)
-						    end
+			            elseif opName == "NAMECALL" then
+			                local rawKey = self:getConstant(aux)
+			                local cleanKey = rawKey:gsub('^"', ''):gsub('"$', '')
+			                
+			                self.pendingNamecall = {
+			                    method = cleanKey,
+			                    baseReg = A
+			                }
+			            elseif opName == "CALL" then
+			                local argCount = (B or 0) - 1
+			                local args = {}
+			                
+			                local isMethod = (self.pendingNamecall ~= nil)
+			                local startOffset = isMethod and 2 or 1 
+			            
+			                if argCount == -1 then 
+			                    table_insert(args, "...")
+			                elseif argCount > 0 then
+			                    for i = startOffset, argCount do
+			                        table_insert(args, self:getReg(A + i))
+			                    end
+			                end
+			            
+			                local callStr
+			                if isMethod then
+			                    local methodName = (type(self.pendingNamecall) == "table") and self.pendingNamecall.method or self.pendingNamecall
+			                    local object = self:getReg(A + 1)
+			                    
+			                    callStr = string_format("%s:%s(%s)", object, methodName, table_concat(args, ", "))
+			                    self.pendingNamecall = nil
+			                else
+			                    callStr = string_format("%s(%s)", self:getReg(A, PREC.ATOMIC), table_concat(args, ", "))
+			                end
+			            
+			                local resCount = (C or 0) - 1
+			                if resCount == 0 then 
+			                    self:emit(callStr)
+			                elseif resCount == 1 then 
+			                    self:assignReg(A, callStr)
+			                else
+			                    local vars = {}
+			                    for i = 0, (resCount > 0 and resCount - 1 or 0) do
+			                        table_insert(vars, self:getReg(A + i))
+			                    end
+			                    self:emit("local " .. table_concat(vars, ", ") .. " = " .. callStr)
+			                end
 			
 			            elseif opName == "RETURN" then
 			                local count = (B or 0) - 1
