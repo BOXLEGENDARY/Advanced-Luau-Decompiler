@@ -1782,7 +1782,7 @@ local function Decompile(bytecode)
 			Context.__index = Context
 			
 			--- do not touch only developer.
-			local DEBUG_OPCODES = false
+			local DEBUG_OPCODES = true
 			
 			local RESERVED_KEYWORDS = {
 			    ["and"] = true, ["break"] = true, ["do"] = true, ["else"] = true,
