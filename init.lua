@@ -1891,54 +1891,70 @@ local function Decompile(bytecode)
 			    if self.declaredLocals[index] or reg.isVariable then
 			        return "v" .. index
 			    end
-			
-			    if not reg.isGlobal and not reg.text then
-			        return "v" .. index
-			    end
-			
-			    local name = reg.text or ("v" .. index)
 			    
+			    local name = reg.text or ("v" .. index)
+			
 			    if name == "{}" or name == "" then
-			        name = "v" .. index
+			        return "v" .. index
 			    end
 			
 			    if minPrio and reg.prio and reg.prio < minPrio then
 			        if string.match(name, "[%s%+%-%%%*%^/<>=~]") and 
+			           not string.match(name, "^%b()$") and
 			           not string.match(name, "^\"[^\"]*\"$") and 
-			           not string.match(name, "^%-%d") then
-			            return "(" .. name .. ")"
+			           not string.match(name, "^%-%d+$") then
+			            name = "(" .. name .. ")"
 			        end
 			    end
-			
+			    
 			    return name
 			end
 			
 			function Context:setReg(index, expr, priority)
-			    self.registers[index] = { text = expr, prio = priority or 0 }
+			    self.registers[index] = { 
+			        text = expr, 
+			        prio = priority or PREC.ATOMIC,
+			        isVariable = false,
+			        isInlineable = true,
+			        pc = self.pc
+			    }
 			    self.tempRegisters[index] = true
 			end
 			
 			function Context:assignReg(index, expr)
 			    local debugName = self:getDebugLocalName(index)
 			    local regName = debugName or "v" .. index
+			    local useCount = self.usageCount[index] or 0
 			    
-			    self.registers[index] = { 
-			        text = regName,
-			        prio = PREC.ATOMIC, 
-			        isGlobal = false,
-			        isVariable = true,
-			        forceVariableName = true 
-			    }
+			    local isFunctionCall = expr:find("%(") or expr:find(":")
 			
-			    if not self.declaredLocals[index] and not debugName then
-			        self:emit("local " .. regName .. " = " .. expr)
-			        self.declaredLocals[index] = true
+			    if debugName or useCount > 1 or isFunctionCall or self.declaredLocals[index] then
+			        if not self.declaredLocals[index] then
+			            self:emit("local " .. regName .. " = " .. expr)
+			            self.declaredLocals[index] = true
+			        else
+			            self:emit(regName .. " = " .. expr)
+			        end
+			        
+			        self.registers[index] = { 
+			            text = regName,
+			            prio = PREC.ATOMIC, 
+			            isGlobal = false,
+			            isVariable = true,
+			            isInlineable = false
+			        }
 			    else
-			        self:emit(regName .. " = " .. expr)
+			        self.registers[index] = { 
+			            text = expr, 
+			            prio = PREC.ATOMIC,
+			            isGlobal = false,
+			            isVariable = false, 
+			            isInlineable = true
+			        }
 			    end
 			    
 			    self.tempRegisters[index] = false
-			    
+			
 			    if self.pendingNamecall and self.pendingNamecall.baseReg == index then
 			        self.pendingNamecall = nil
 			    end
@@ -1982,21 +1998,62 @@ local function Decompile(bytecode)
 			end
 			
 			function Context:analyzeFlow()
+			    self.usageCount = {}
+			    self.jumpTargets = {}
+			
 			    for i = 1, #self.instructions do
 			        local ins = self.instructions[i]
-			        if ins then 
-			            local ok, op = pcall(function() return Luau:INSN_OP(ins) end)
-			            if ok then
-			                local opInfo = LuauOpCode[op]
-			                if opInfo then
-			                    if opInfo.name:find("JUMP") or opInfo.name:find("FOR") then
-			                        local sD = 0
-			                        if Luau.INSN_sD then pcall(function() sD = Luau:INSN_sD(ins) end) end
-			                        if opInfo.name == "JUMPX" and Luau.INSN_E then pcall(function() sD = Luau:INSN_E(ins) end) end
-			                        local target = i + 1 + (sD or 0)
-			                        self.jumpTargets[target] = true
-			                    end
+			        if not ins then continue end
+			        
+			        local ok, op = pcall(function() return Luau:INSN_OP(ins) end)
+			        if not ok then continue end
+			        
+			        local opInfo = LuauOpCode[op]
+			        if not opInfo then continue end
+			        local opName = opInfo.name
+			
+			        if opName:find("JUMP") or opName:find("FOR") then
+			            local sD = 0
+			            pcall(function() sD = Luau:INSN_sD(ins) end)
+			            if opName == "JUMPX" then pcall(function() sD = Luau:INSN_E(ins) end) end
+			            local target = i + 1 + (sD or 0)
+			            self.jumpTargets[target] = true
+			        end
+			
+			        local function addUsage(reg)
+			            if reg then
+			                self.usageCount[reg] = (self.usageCount[reg] or 0) + 1
+			            end
+			        end
+			
+			        local A, B, C = 0, 0, 0
+			        pcall(function() A = Luau:INSN_A(ins) end)
+			        pcall(function() B = Luau:INSN_B(ins) end)
+			        pcall(function() C = Luau:INSN_C(ins) end)
+			
+			        if opName == "MOVE" then
+			            addUsage(B)
+			        elseif opName:match("^[ASMD]%a%a$") or opName == "ADD" or opName == "SUB" or opName == "MUL" or opName == "DIV" then
+			            addUsage(B)
+			            if not opName:find("K$") then addUsage(C) end
+			        elseif opName == "CALL" or opName == "NAMECALL" then
+			            addUsage(A) 
+			            if B > 1 then
+			                for argReg = A + 1, A + B - 1 do
+			                    addUsage(argReg)
 			                end
+			            elseif B == 0 then -- varargs
+			            end
+			        elseif opName == "SETTABLE" or opName == "SETTABLEN" or opName == "SETTABLEKS" then
+			            addUsage(A) -- source value
+			            addUsage(B) -- table
+			            if opName == "SETTABLE" then addUsage(C) end -- index reg
+			        elseif opName == "GETTABLE" or opName == "GETTABLEN" or opName == "GETTABLEKS" then
+			            addUsage(B) -- table source
+			            if opName == "GETTABLE" then addUsage(C) end
+			        elseif opName == "RETURN" then
+			            if A > 0 then
+			                for retReg = B, B + A - 1 do addUsage(retReg) end
 			            end
 			        end
 			    end
