@@ -1765,6 +1765,7 @@ local function Decompile(bytecode)
 		else -- assume optdec - optimized decompiler
 			local Lifter = {}
 			Lifter.Cache = {}
+			local globalFunctionCounter = 0
 			
 			local table_insert = table.insert
 			local table_concat = table.concat
@@ -1837,30 +1838,35 @@ local function Decompile(bytecode)
 			
 			function Context.new(proto, protoId, depth)
 			    local self = setmetatable({}, Context)
+			
+			    if not protoId or protoId == "" or protoId == "main" then
+			        globalFunctionCounter = globalFunctionCounter + 1
+			        self.id = "func_proto_" .. globalFunctionCounter
+			    else
+			        self.id = protoId
+			    end
+			
 			    self.proto = proto or {}
-			    self.id = protoId
 			    self.depth = depth or 0
 			    self.instructions = self.proto.instructions or {}
 			    self.constants = self.proto.constants or {}
-			    self.innerProtos = self.proto.innerProtos
-			    self.debugLocals = self.proto.debugLocals
-			    self.debugUpvalues = self.proto.debugUpvalues
+			    self.innerProtos = self.proto.innerProtos or {}
+			    self.debugLocals = self.proto.debugLocals or {}
+			    self.debugUpvalues = self.proto.debugUpvalues or {}
 			    self.pc = 1
 			    self.length = #self.instructions
 			    self.lines = {}
 			    self.indentLevel = 0
-			
 			    self.registers = {}
 			    self.tempRegisters = {}
 			    self.declaredLocals = {}
 			    self.compiledClosures = {}
-			
 			    self.scopeStack = {}
 			    self.jumpTargets = {}
-			
 			    self.pendingNamecall = nil
-	    		self.pendingFastcall = nil
+			    self.pendingFastcall = nil
 			    self.pendingTables = {}
+			    
 			    return self
 			end
 			
