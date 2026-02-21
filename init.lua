@@ -2098,16 +2098,26 @@ local function Decompile(bytecode)
 			                if LIST_USED_GLOBALS and isValidGlobal and isValidGlobal(globalKey) then table_insert(usedGlobals, globalKey) end
 			                self:emit(globalKey .. " = " .. self:getReg(A))
 						elseif opName == "GETIMPORT" then
-						    local path = toIdentifier(self:getConstant(aux))
-						    if bit32_band and bit32_rshift then
-						        local count = bit32_rshift(aux, 30)
-						        local id0 = bit32_band(bit32_rshift(aux, 20), 0x3FF)
-						        
-						        path = toIdentifier(self:getConstant(id0))
-						        if count > 1 then path = path .. "." .. toIdentifier(self:getConstant(bit32_band(bit32_rshift(aux, 10), 0x3FF))) end
-						        if count > 2 then path = path .. "." .. toIdentifier(self:getConstant(bit32_band(aux, 0x3FF))) end
+						    local count = bit32_rshift(aux, 30)
+						    local id0 = bit32_band(bit32_rshift(aux, 20), 0x3FF)
+						    local id1 = bit32_band(bit32_rshift(aux, 10), 0x3FF)
+						    local id2 = bit32_band(aux, 0x3FF)
+						
+						    local function getClean(idx)
+						        local c = self:getConstant(idx)
+						        return c:gsub('^"', ''):gsub('"$', '')
 						    end
-						    self:setReg(A, path or "nil", PREC.ATOMIC)
+						
+						    local path = ""
+						    if count == 1 then
+						        path = getClean(id0)
+						    elseif count == 2 then
+						        path = getClean(id0) .. "." .. getClean(id1)
+						    elseif count == 3 then
+						        path = getClean(id0) .. "." .. getClean(id1) .. "." .. getClean(id2)
+						    end
+						
+						    self:setReg(A, path, PREC.ATOMIC)
 			            elseif opName == "GETUPVAL" then
 			                self:setReg(A, self:getUpvalue(B), PREC.ATOMIC)
 			            elseif opName == "SETUPVAL" then
@@ -2140,17 +2150,28 @@ local function Decompile(bytecode)
 			                    self:setReg(A, "{" .. table_concat(tbl.items, ", ") .. "}", PREC.ATOMIC)
 			                end
 			
-			            elseif opName == "GETTABLEKS" then
-			                self:setReg(A, self:getReg(B, PREC.ATOMIC) .. formatIndexString(self:getConstant(aux)), PREC.ATOMIC)
+						elseif opName == "GETTABLEKS" then
+						    local target = "v" .. A
+						    local source = self:getReg(B)
+						    local rawKey = self:getConstant(aux)
+						    local cleanKey = rawKey:gsub('^"', ''):gsub('"$', '')
+						
+						    if isValidIdentifier(cleanKey) then
+						        self:setReg(A, source .. "." .. cleanKey, PREC.ATOMIC)
+						    else
+						        self:setReg(A, string.format('%s[%q]', source, cleanKey), PREC.ATOMIC)
+						    end
 						elseif opName == "SETTABLEKS" then
 						    local targetName = self:getReg(B)
 						    local rawKey = self:getConstant(aux)
 						    local value = self:getReg(A)
+						    
+						    local cleanKey = rawKey:gsub('^"', ''):gsub('"$', '')
 						
-						    if isValidIdentifier(rawKey) then
-						        self:emit(targetName .. "." .. rawKey .. " = " .. value)
+						    if isValidIdentifier(cleanKey) then
+						        self:emit(targetName .. "." .. cleanKey .. " = " .. value)
 						    else
-						        self:emit(targetName .. '["' .. rawKey .. '"] = ' .. value)
+						        self:emit(string.format('%s[%q] = %s', targetName, cleanKey, value))
 						    end
 			
 			            -- Math & Logic
@@ -2258,8 +2279,11 @@ local function Decompile(bytecode)
 			            elseif opName and opName:find("FASTCALL") then			            
 			            elseif opName == "COVERAGE" or opName == "CAPTURE" or opName == "PREPVARARGS" or opName == "FORNLOOP" or opName == "FORGLOOP" or opName == "CLOSEUPVALS" then
 						elseif opName == "NAMECALL" then
-						    local method = toIdentifier(self:getConstant(aux))
-						    self.pendingNamecall = { obj = self:getReg(B, PREC.ATOMIC), method = method, reg = A }
+						    local source = self:getReg(B)
+						    local rawKey = self:getConstant(aux)
+						    local cleanKey = rawKey:gsub('^"', ''):gsub('"$', '') -- ล้างฟันหนู
+						    
+						    self.namecall = cleanKey 
 			            elseif opName == "CALL" then
 			                local argCount, args = (B or 0) - 1, {}
 			                if argCount == -1 then table_insert(args, "...")
