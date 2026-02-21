@@ -1882,12 +1882,17 @@ local function Decompile(bytecode)
 			    local debugName = self:getDebugLocalName(index)
 			    if debugName then return debugName end
 			
+			    if self.declaredLocals[index] then
+			        return "v" .. index
+			    end
+			
 			    local reg = self.registers[index]
-			    if not reg then 
+			    if not reg or not reg.text then 
 			        return "v" .. index 
 			    end
 			
 			    local name = reg.text
+			
 			    if name == "{}" then
 			        name = "v" .. index
 			    end
@@ -2082,8 +2087,10 @@ local function Decompile(bytecode)
 			                self:setReg(A, self:getConstant(D), PREC.ATOMIC)
 			            elseif opName == "LOADKX" then
 			                self:setReg(A, self:getConstant(aux), PREC.ATOMIC)
-			            elseif opName == "MOVE" then
-			                self:setReg(A, self:getReg(B), (self.registers[B] and self.registers[B].prio) or 0)
+						elseif opName == "MOVE" then
+						    local source = self:getReg(B)
+						    local sourcePrio = (self.registers[B] and self.registers[B].prio) or PREC.ATOMIC
+						    self:setReg(A, source, sourcePrio)
 			            elseif opName == "GETGLOBAL" then
 			                local globalKey = toIdentifier(self:getConstant(aux ~= 0 and aux or D))
 			                if LIST_USED_GLOBALS and isValidGlobal and isValidGlobal(globalKey) then table_insert(usedGlobals, globalKey) end
@@ -2312,10 +2319,13 @@ local function Decompile(bytecode)
 						        self:emit(callStr)
 						    elseif resCount == 1 then 
 						        self:assignReg(A, callStr)
+						        if self.registers[A] then self.registers[A].isVariable = true end
 						    else
 						        local vars = {}
 						        for i = 0, (resCount > 0 and resCount - 1 or 0) do
-						            table_insert(vars, self:getReg(A + i))
+						            local regIdx = A + i
+						            table_insert(vars, self:getReg(regIdx))
+						            self.declaredLocals[regIdx] = true
 						        end
 						        self:emit("local " .. table_concat(vars, ", ") .. " = " .. callStr)
 						    end
