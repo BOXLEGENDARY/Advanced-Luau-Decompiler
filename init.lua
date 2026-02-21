@@ -1889,11 +1889,12 @@ local function Decompile(bytecode)
 			        return reg.text
 			    end
 			
-			    if self.declaredLocals[index] then
+			    if reg.forceVariableName or self.declaredLocals[index] then
 			        return "v" .. index
 			    end
 			
 			    local name = reg.text
+			    
 			    if name == "{}" then
 			        name = "v" .. index
 			    end
@@ -2293,6 +2294,10 @@ local function Decompile(bytecode)
 						    local rawKey = self:getConstant(aux)
 						    local cleanKey = rawKey:gsub('^"', ''):gsub('"$', '')
 						    
+						    if self.registers[A] and not self.registers[A].isGlobal then
+						        self.registers[A].forceVariableName = true 
+						    end
+						
 						    self.pendingNamecall = {
 						        method = cleanKey,
 						        baseReg = A,
