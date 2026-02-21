@@ -2030,7 +2030,7 @@ local function Decompile(bytecode)
 			        end
 			
 			        local function addUsage(reg)
-			            if reg then
+			            if reg ~= nil then
 			                self.usageCount[reg] = (self.usageCount[reg] or 0) + 1
 			            end
 			        end
@@ -2039,31 +2039,55 @@ local function Decompile(bytecode)
 			        pcall(function() A = Luau:INSN_A(ins) end)
 			        pcall(function() B = Luau:INSN_B(ins) end)
 			        pcall(function() C = Luau:INSN_C(ins) end)
+			        local aux = (opInfo.aux and (self.instructions[i + 1] or 0)) or 0
 			
 			        if opName == "MOVE" then
 			            addUsage(B)
+			        elseif opName == "GETUPVAL" then
 			        elseif opName:match("^[ASMD]%a%a$") or opName == "ADD" or opName == "SUB" or opName == "MUL" or opName == "DIV" then
 			            addUsage(B)
 			            if not opName:find("K$") then addUsage(C) end
 			        elseif opName == "CALL" or opName == "NAMECALL" then
-			            addUsage(A) 
+			            addUsage(A)
+			            if opName == "NAMECALL" then
+			                addUsage(B)
+			            end
+			            
 			            if B > 1 then
 			                for argReg = A + 1, A + B - 1 do
 			                    addUsage(argReg)
 			                end
-			            elseif B == 0 then -- varargs
+			            elseif B == 0 then
 			            end
 			        elseif opName == "SETTABLE" or opName == "SETTABLEN" or opName == "SETTABLEKS" then
-			            addUsage(A) -- source value
-			            addUsage(B) -- table
-			            if opName == "SETTABLE" then addUsage(C) end -- index reg
-			        elseif opName == "GETTABLE" or opName == "GETTABLEN" or opName == "GETTABLEKS" then
-			            addUsage(B) -- table source
-			            if opName == "GETTABLE" then addUsage(C) end
-			        elseif opName == "RETURN" then
-			            if A > 0 then
-			                for retReg = B, B + A - 1 do addUsage(retReg) end
+			            addUsage(A)
+			            
+			            local prevIns = self.instructions[i-1]
+			            local isTableConstruct = false
+			            if prevIns then
+			                local _, pOp = pcall(function() return Luau:INSN_OP(prevIns) end)
+			                local pName = LuauOpCode[pOp] and LuauOpCode[pOp].name
+			                if pName == "NEWTABLE" or pName == "DUPTABLE" then
+			                    isTableConstruct = true
+			                end
 			            end
+			            
+			            if not isTableConstruct then
+			                addUsage(B)
+			            end
+			
+			            if opName == "SETTABLE" then addUsage(C) end
+			        elseif opName == "GETTABLE" or opName == "GETTABLEN" or opName == "GETTABLEKS" then
+			            addUsage(B)
+			            if opName == "GETTABLE" then addUsage(C) end
+			        elseif opName == "CONCAT" then
+			            for reg = B, C do addUsage(reg) end
+			        elseif opName == "RETURN" then
+			            if B > 0 then
+			                for retReg = A, A + B - 1 do addUsage(retReg) end
+			            end
+			        elseif opName == "CAPTURE" then
+			            addUsage(B)
 			        end
 			    end
 			end
@@ -2704,6 +2728,7 @@ local function Decompile(bytecode)
 			end
 			
 			function Lifter.decompile(proto, protoId, depth)
+			    if Lifter.Cache[proto] then return Lifter.Cache[proto] end 
 			    local ctx = Context.new(proto, protoId or "main", depth)
 			    local ok, res = pcall(function() return ctx:process() end)
 			    if not ok then return "-- Decompiler Error: \n-- " .. tostring(res) .. "\n" .. table_concat(ctx.lines, "\n") end
