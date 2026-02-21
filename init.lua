@@ -1903,15 +1903,15 @@ local function Decompile(bytecode)
 			    local reg = self.registers[index]
 			    if not reg then return "v" .. index end
 			
+			    if self.declaredLocals[index] or reg.forceVariableName then
+			        return "v" .. index
+			    end
+			
 			    if reg.isGlobal then
 			        return reg.text
 			    end
 			
-			    if reg.forceVariableName or self.declaredLocals[index] then
-			        return "v" .. index
-			    end
-			
-			    local name = reg.text
+			    local name = reg.text or ("v" .. index)
 			    
 			    if name == "{}" then
 			        name = "v" .. index
@@ -2143,14 +2143,14 @@ local function Decompile(bytecode)
 						        path = getClean(id0) .. "." .. getClean(id1) .. "." .. getClean(id2)
 						    end
 						
-						    self:setReg(A, path, PREC.DOT)
-						
-						    local root = path:match("^([^%.]+)") 
+						    local root = path:match("^([^%.]+)")
+						    local isGlobal = GLOBALS[root] ~= nil
 						    
-						    if GLOBALS[root] then
-						        if self.registers[A] then
-						            self.registers[A].isGlobal = true
-						        end
+						    self:setReg(A, path, PREC.DOT)
+						    
+						    if self.registers[A] then
+						        self.registers[A].isGlobal = isGlobal
+						        self.registers[A].isVariable = false 
 						    end
 			            elseif opName == "GETUPVAL" then
 			                self:setReg(A, self:getUpvalue(B), PREC.ATOMIC)
