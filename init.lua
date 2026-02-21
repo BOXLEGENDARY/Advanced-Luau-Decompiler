@@ -1872,9 +1872,9 @@ local function Decompile(bytecode)
 			function Context:assignReg(index, expr)
 			    local regName = self:getReg(index)
 			    
-			    if type(regName) == "string" then
-			        if regName:match('^"([^"]+)"$') then regName = regName:sub(2, -2) end
-			        if regName:find("%.") then regName = string.gsub(regName, "%.", "_") end
+			    if not regName:match("^v%d+$") then
+			        regName = "v" .. index
+			        self:setReg(index, regName)
 			    end
 			
 			    if not self.declaredLocals[index] and not self:getDebugLocalName(index) then
@@ -2127,8 +2127,10 @@ local function Decompile(bytecode)
 						    self.registers[A] = { 
 						        isTable = true, 
 						        text = "v" .. A,
+						        dict = {},
 						        prio = PREC.ATOMIC 
 						    }
+						    self.tempRegisters[A] = true
 						elseif opName == "DUPTABLE" then
 						    local const = (self.constants and self.constants[D + 1])
 						    
@@ -2136,10 +2138,9 @@ local function Decompile(bytecode)
 						        isTable = true,
 						        text = "v" .. A,
 						        prio = PREC.ATOMIC,
-						        shape = (const and const.value and const.value.keys) 
+						        shape = (const and const.value and const.value.keys)
 						    }
-						    
-						    self:emit("local v" .. A .. " = {}") 
+						    self.tempRegisters[A] = true			
 			            elseif opName == "SETLIST" then
 			                local count = (C or 0) - 1
 			                local tbl = self.pendingTables[A]
@@ -2279,27 +2280,25 @@ local function Decompile(bytecode)
 			            elseif opName and opName:find("FASTCALL") then			            
 			            elseif opName == "COVERAGE" or opName == "CAPTURE" or opName == "PREPVARARGS" or opName == "FORNLOOP" or opName == "FORGLOOP" or opName == "CLOSEUPVALS" then
 						elseif opName == "NAMECALL" then
-						    local source = self:getReg(B)
 						    local rawKey = self:getConstant(aux)
-						    local cleanKey = rawKey:gsub('^"', ''):gsub('"$', '') -- ล้างฟันหนู
-						    
-						    self.namecall = cleanKey 
+						    local cleanKey = rawKey:gsub('^"', ''):gsub('"$', '')
+						    self.namecall = cleanKey
 						elseif opName == "CALL" then
 						    local argCount, args = (B or 0) - 1, {}
 						    if argCount == -1 then 
 						        table_insert(args, "...")
 						    elseif argCount > 0 then
 						        for i = 0, argCount - 1 do
-						            if not (self.pendingNamecall and self.pendingNamecall.reg == A and i == 0) then
+						            if not (self.namecall and i == 0) then
 						                table_insert(args, self:getReg(A + 1 + i))
 						            end
 						        end
 						    end
 						
 						    local callStr
-						    if self.pendingNamecall and self.pendingNamecall.reg == A then
-						        callStr = string_format("%s:%s(%s)", self.pendingNamecall.obj, self.pendingNamecall.method, table_concat(args, ", "))
-						        self.pendingNamecall = nil
+						    if self.namecall then
+						        callStr = string_format("%s:%s(%s)", self:getReg(A + 1), self.namecall, table_concat(args, ", "))
+						        self.namecall = nil
 						    else
 						        callStr = string_format("%s(%s)", self:getReg(A, PREC.ATOMIC), table_concat(args, ", "))
 						    end
@@ -2308,21 +2307,13 @@ local function Decompile(bytecode)
 						    if resCount == 0 then 
 						        self:emit(callStr)
 						    elseif resCount == 1 then 
-						        local currentRegValue = self:getReg(A)
-						        
-						        if not currentRegValue:match("^v%d+$") then
-						            self:emit(currentRegValue .. " = " .. callStr)
-						        else
-						            self:assignReg(A, callStr)
-						        end
+						        self:assignReg(A, callStr)
 						    else
 						        local vars = {}
 						        for i = 0, (resCount > 0 and resCount - 1 or 0) do
 						            table_insert(vars, self:getReg(A + i))
-						            self.tempRegisters[A + i] = false
-						            self.declaredLocals[A + i] = true
 						        end
-						        self:emit("local " .. table_concat(vars, ", ") .. (resCount == -1 and ", ... = " or " = ") .. callStr)
+						        self:emit("local " .. table_concat(vars, ", ") .. " = " .. callStr)
 						    end
 			
 			            elseif opName == "RETURN" then
