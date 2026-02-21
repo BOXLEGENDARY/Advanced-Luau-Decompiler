@@ -2272,53 +2272,54 @@ local function Decompile(bytecode)
 			                end
 			            elseif opName and opName:find("FASTCALL") then			            
 			            elseif opName == "COVERAGE" or opName == "CAPTURE" or opName == "PREPVARARGS" or opName == "FORNLOOP" or opName == "FORGLOOP" or opName == "CLOSEUPVALS" then
-			            elseif opName == "NAMECALL" then
-			                local rawKey = self:getConstant(aux)
-			                local cleanKey = rawKey:gsub('^"', ''):gsub('"$', '')
-			                
-			                self.pendingNamecall = {
-			                    method = cleanKey,
-			                    baseReg = A
-			                }
-			            elseif opName == "CALL" then
-			                local argCount = (B or 0) - 1
-			                local args = {}
-			                
-			                local isMethod = (self.pendingNamecall ~= nil)
-			                local startOffset = isMethod and 2 or 1 
-			            
-			                if argCount == -1 then 
-			                    table_insert(args, "...")
-			                elseif argCount > 0 then
-			                    for i = startOffset, argCount do
-			                        table_insert(args, self:getReg(A + i))
-			                    end
-			                end
-			            
-			                local callStr
-			                if isMethod then
-			                    local methodName = (type(self.pendingNamecall) == "table") and self.pendingNamecall.method or self.pendingNamecall
-			                    local object = self:getReg(A + 1)
-			                    
-			                    callStr = string_format("%s:%s(%s)", object, methodName, table_concat(args, ", "))
-			                    self.pendingNamecall = nil
-			                else
-			                    callStr = string_format("%s(%s)", self:getReg(A, PREC.ATOMIC), table_concat(args, ", "))
-			                end
-			            
-			                local resCount = (C or 0) - 1
-			                if resCount == 0 then 
-			                    self:emit(callStr)
-			                elseif resCount == 1 then 
-			                    self:assignReg(A, callStr)
-			                else
-			                    local vars = {}
-			                    for i = 0, (resCount > 0 and resCount - 1 or 0) do
-			                        table_insert(vars, self:getReg(A + i))
-			                    end
-			                    self:emit("local " .. table_concat(vars, ", ") .. " = " .. callStr)
-			                end
-			
+						elseif opName == "NAMECALL" then
+						    local rawKey = self:getConstant(aux)
+						    local cleanKey = rawKey:gsub('^"', ''):gsub('"$', '')
+						    
+						    self.pendingNamecall = {
+						        method = cleanKey,
+						        baseReg = A,
+						        objectText = self:getReg(A) 
+						    }
+						elseif opName == "CALL" then
+						    local argCount = (B or 0) - 1
+						    local args = {}
+						    
+						    local isMethod = (self.pendingNamecall ~= nil)
+						    local startOffset = isMethod and 2 or 1 
+						
+						    if argCount == -1 then 
+						        table_insert(args, "...")
+						    elseif argCount > 0 then
+						        for i = startOffset, argCount do
+						            table_insert(args, self:getReg(A + i))
+						        end
+						    end
+						
+						    local callStr = ""
+						    if isMethod then
+						        local methodName = self.pendingNamecall.method
+						        local object = self:getReg(A)
+						        
+						        callStr = string_format("%s:%s(%s)", object, methodName, table_concat(args, ", "))
+						        self.pendingNamecall = nil
+						    else
+						        callStr = string_format("%s(%s)", self:getReg(A, PREC.ATOMIC), table_concat(args, ", "))
+						    end
+						
+						    local resCount = (C or 0) - 1
+						    if resCount == 0 then 
+						        self:emit(callStr)
+						    elseif resCount == 1 then 
+						        self:assignReg(A, callStr)
+						    else
+						        local vars = {}
+						        for i = 0, (resCount > 0 and resCount - 1 or 0) do
+						            table_insert(vars, self:getReg(A + i))
+						        end
+						        self:emit("local " .. table_concat(vars, ", ") .. " = " .. callStr)
+						    end
+						
 			            elseif opName == "RETURN" then
 			                local count = (B or 0) - 1
 			                if count == 0 then self:emit("return")
