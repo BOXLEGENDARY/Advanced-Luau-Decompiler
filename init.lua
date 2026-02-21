@@ -2284,37 +2284,46 @@ local function Decompile(bytecode)
 						    local cleanKey = rawKey:gsub('^"', ''):gsub('"$', '') -- ล้างฟันหนู
 						    
 						    self.namecall = cleanKey 
-			            elseif opName == "CALL" then
-			                local argCount, args = (B or 0) - 1, {}
-			                if argCount == -1 then table_insert(args, "...")
-			                elseif argCount > 0 then
-			                    for i = 0, argCount - 1 do
-			                        if not (self.pendingNamecall and self.pendingNamecall.reg == A and i == 0) then
-			                            table_insert(args, self:getReg(A + 1 + i))
-			                        end
-			                    end
-			                end
-			
-			                local callStr
-			                if self.pendingNamecall and self.pendingNamecall.reg == A then
-			                    callStr = string_format("%s:%s(%s)", self.pendingNamecall.obj, self.pendingNamecall.method, table_concat(args, ", "))
-			                    self.pendingNamecall = nil
-			                else
-			                    callStr = string_format("%s(%s)", self:getReg(A, PREC.ATOMIC), table_concat(args, ", "))
-			                end
-			
-			                local resCount = (C or 0) - 1
-			                if resCount == 0 then self:emit(callStr)
-			                elseif resCount == 1 then self:assignReg(A, callStr)
-			                else
-			                    local vars = {}
-			                    for i = 0, (resCount > 0 and resCount - 1 or 0) do
-			                        table_insert(vars, self:getReg(A + i))
-			                        self.tempRegisters[A + i] = false
-			                        self.declaredLocals[A + i] = true
-			                    end
-			                    self:emit("local " .. table_concat(vars, ", ") .. (resCount == -1 and ", ... = " or " = ") .. callStr)
-			                end
+						elseif opName == "CALL" then
+						    local argCount, args = (B or 0) - 1, {}
+						    if argCount == -1 then 
+						        table_insert(args, "...")
+						    elseif argCount > 0 then
+						        for i = 0, argCount - 1 do
+						            if not (self.pendingNamecall and self.pendingNamecall.reg == A and i == 0) then
+						                table_insert(args, self:getReg(A + 1 + i))
+						            end
+						        end
+						    end
+						
+						    local callStr
+						    if self.pendingNamecall and self.pendingNamecall.reg == A then
+						        callStr = string_format("%s:%s(%s)", self.pendingNamecall.obj, self.pendingNamecall.method, table_concat(args, ", "))
+						        self.pendingNamecall = nil
+						    else
+						        callStr = string_format("%s(%s)", self:getReg(A, PREC.ATOMIC), table_concat(args, ", "))
+						    end
+						
+						    local resCount = (C or 0) - 1
+						    if resCount == 0 then 
+						        self:emit(callStr)
+						    elseif resCount == 1 then 
+						        local currentRegValue = self:getReg(A)
+						        
+						        if not currentRegValue:match("^v%d+$") then
+						            self:emit(currentRegValue .. " = " .. callStr)
+						        else
+						            self:assignReg(A, callStr)
+						        end
+						    else
+						        local vars = {}
+						        for i = 0, (resCount > 0 and resCount - 1 or 0) do
+						            table_insert(vars, self:getReg(A + i))
+						            self.tempRegisters[A + i] = false
+						            self.declaredLocals[A + i] = true
+						        end
+						        self:emit("local " .. table_concat(vars, ", ") .. (resCount == -1 and ", ... = " or " = ") .. callStr)
+						    end
 			
 			            elseif opName == "RETURN" then
 			                local count = (B or 0) - 1
