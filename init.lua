@@ -2115,10 +2115,14 @@ local function Decompile(bytecode)
 			                self:setReg(A, self:getReg(B, PREC.ATOMIC) .. formatIndexString(self:getConstant(aux)), PREC.ATOMIC)
 						elseif opName == "SETTABLEKS" then
 						    local targetName = self:getReg(B)
-						    local key = toIdentifier(self:getConstant(aux))
+						    local rawKey = self:getConstant(aux)
 						    local value = self:getReg(A)
 						
-						    self:emit(targetName .. "." .. key .. " = " .. value)
+						    if isValidIdentifier(rawKey) then
+						        self:emit(targetName .. "." .. rawKey .. " = " .. value)
+						    else
+						        self:emit(targetName .. '["' .. rawKey .. '"] = ' .. value)
+						    end
 			
 			            -- Math & Logic
 			            elseif opName == "ADD" then self:setReg(A, self:getReg(B, PREC.ADD) .. " + " .. self:getReg(C, PREC.ADD), PREC.ADD)
