@@ -1927,7 +1927,7 @@ local function Decompile(bytecode)
 			    local useCount = self.usageCount[index] or 0
 			    
 			    local isFunctionCall = expr:find("%(") or expr:find(":")
-			
+			    
 			    if debugName or useCount > 1 or isFunctionCall or self.declaredLocals[index] then
 			        if not self.declaredLocals[index] then
 			            self:emit("local " .. regName .. " = " .. expr)
