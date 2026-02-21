@@ -2245,12 +2245,12 @@ local function Decompile(bytecode)
 			                
 			
 			            -- Unknown-but-safe fallback for any other unhandled opcodes
-			            else
+			            --else
 			                -- If we reach here, keep existing behavior (do nothing)
 			                -- But we still handle some explicit unknowns:
 			                if opName == "JUMPX" or opName == "JUMP" then
 			                    -- JUMP handling is partly implemented elsewhere; keep silent here.
-			                else
+			                --else
 			                    -- Emit a comment so missing opcodes are visible in output for debugging.
 			                    self:emit(string_format("-- unhandled opcode: %s (%s)", tostring(opName), tostring(op)))
 			                end
