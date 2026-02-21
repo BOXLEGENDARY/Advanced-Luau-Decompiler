@@ -1808,9 +1808,6 @@ local function Decompile(bytecode)
 			
 			    self.pendingNamecall = nil
 			    self.pendingTables = {}
-
-			    self.declaredLocals = {}
-                self.usedNames = {}
 			    return self
 			end
 			
@@ -1843,17 +1840,17 @@ local function Decompile(bytecode)
 			    local debugName = self:getDebugLocalName(index)
 			    if debugName then return debugName end
 			
-			    if self.declaredLocals[index] then
-			        local name = self.declaredLocals[index]
-			        local reg = self.registers[index]
-			        local prio = (reg and reg.prio) or PREC.ATOMIC
-			
-			        if minPrio and prio < minPrio then
-			            return "(" .. name .. ")"
+			    local reg = self.registers[index]
+			    if reg then
+			        local name = reg.text
+			        
+			        if minPrio and reg.prio and reg.prio < minPrio then
+			            if string.match(name, "[%s%+%-%%%*%^/<>=~]") and not string.match(name, "^\"[^\"]*\"$") and not string.match(name, "^%-%d") then
+			                return "(" .. name .. ")"
+			            end
 			        end
 			        return name
 			    end
-			
 			    return ("v%d"):format(index)
 			end
 			
@@ -1863,28 +1860,19 @@ local function Decompile(bytecode)
 			end
 			
 			function Context:assignReg(index, expr)
-			    local existingName = self.declaredLocals[index]
+			    local regName = self:getReg(index)
 			    
-			    if not existingName then
-			        local suggestedName = expr:match("^([%a_][%w_]*)") or ("v" .. index)
-			        
-			        local finalName = suggestedName
-			        local counter = 1
-			        while self.usedNames[finalName] do
-			            finalName = suggestedName .. "_" .. counter
-			            counter = counter + 1
-			        end
-			        
-			        self.declaredLocals[index] = finalName
-			        self.usedNames[finalName] = true
-			        self:emit("local " .. finalName .. " = " .. expr)
-			        
-			        self.registers[index] = { text = finalName, prio = PREC.ATOMIC }
-			    else
-			        self:emit(existingName .. " = " .. expr)
-			        self.registers[index] = { text = existingName, prio = PREC.ATOMIC }
+			    if type(regName) == "string" then
+			        if regName:match('^"([^"]+)"$') then regName = regName:sub(2, -2) end
+			        if regName:find("%.") then regName = string.gsub(regName, "%.", "_") end
 			    end
-			    
+			
+			    if not self.declaredLocals[index] and not self:getDebugLocalName(index) then
+			        self:emit("local " .. regName .. " = " .. expr)
+			        self.declaredLocals[index] = true
+			    else
+			        self:emit(regName .. " = " .. expr)
+			    end
 			    self.tempRegisters[index] = false
 			end
 			
