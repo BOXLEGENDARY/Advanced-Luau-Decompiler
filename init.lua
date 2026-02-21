@@ -2190,7 +2190,7 @@ local function Decompile(bytecode)
 			                end
 			
 						elseif opName == "GETTABLEKS" then
-						    local source = self:getReg(B)
+						    local source = (self.declaredLocals[B] or self.registers[B].isVariable) and ("v" .. B) or self:getReg(B)
 						    local rawKey = self:getConstant(aux)
 						    local cleanKey = rawKey:gsub('^"', ''):gsub('"$', '')
 						
