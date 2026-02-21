@@ -1934,19 +1934,23 @@ local function Decompile(bytecode)
 			end
 			
 			function Context:assignReg(index, expr)
-			    local regName = self:getReg(index)
+			    local debugName = self:getDebugLocalName(index)
+			    local regName = debugName or "v" .. index
 			    
-			    if not regName:match("^v%d+$") then
-			        regName = "v" .. index
-			        self:setReg(index, regName)
-			    end
-			
-			    if not self.declaredLocals[index] and not self:getDebugLocalName(index) then
+			    self.registers[index] = { 
+			        text = regName, 
+			        prio = PREC.ATOMIC, 
+			        isGlobal = false,
+			        forceVariableName = false 
+			    }
+
+			    if not self.declaredLocals[index] and not debugName then
 			        self:emit("local " .. regName .. " = " .. expr)
 			        self.declaredLocals[index] = true
 			    else
 			        self:emit(regName .. " = " .. expr)
 			    end
+			    
 			    self.tempRegisters[index] = false
 			end
 			
@@ -2192,10 +2196,13 @@ local function Decompile(bytecode)
 						        expr = string.format('%s[%q]', source, cleanKey)
 						    end
 						
-						    self:setReg(A, expr, PREC.DOT)
-						    if self.registers[A] then 
-						        self.registers[A].isGlobal = false 
-						    end
+						    self.registers[A] = { 
+						        text = expr, 
+						        prio = PREC.DOT, 
+						        isGlobal = false,
+						        forceVariableName = false
+						    }
+						    self.tempRegisters[A] = true
 			            elseif opName == "SETTABLEKS" then
 			                local targetName = self:getReg(B)
 			                local rawKey = self:getConstant(aux)
@@ -2269,7 +2276,16 @@ local function Decompile(bytecode)
 			                    val = self:getConstant(bit32_band(aux, 0xFFFFFF)) 
 			                end
 			                
-			                self:emit(string_format("if %s %s %s then", self:getReg(A, PREC.COMPARE), sign, val))
+			                local regA = self.registers[A]
+			                local leftSide = "v" .. A
+			                
+			                if regA then
+			                    if not regA.isGlobal then
+			                        leftSide = self:getReg(A, PREC.COMPARE)
+			                    end
+			                end
+			                
+			                self:emit(string_format("if %s %s %s then", leftSide, sign, val))
 			                table_insert(self.scopeStack, { type = "IF", endPC = self.pc + 1 + (sD or 0) })
 			                self:indent()
 						elseif opName == "JUMP" or opName == "JUMPX" then
