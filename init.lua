@@ -1882,17 +1882,18 @@ local function Decompile(bytecode)
 			    local debugName = self:getDebugLocalName(index)
 			    if debugName then return debugName end
 			
+			    local reg = self.registers[index]
+			    if not reg then return "v" .. index end
+			
+			    if reg.isGlobal then
+			        return reg.text
+			    end
+			
 			    if self.declaredLocals[index] then
 			        return "v" .. index
 			    end
 			
-			    local reg = self.registers[index]
-			    if not reg or not reg.text then 
-			        return "v" .. index 
-			    end
-			
 			    local name = reg.text
-			
 			    if name == "{}" then
 			        name = "v" .. index
 			    end
@@ -2099,27 +2100,33 @@ local function Decompile(bytecode)
 			                local globalKey = toIdentifier(self:getConstant(aux ~= 0 and aux or D))
 			                if LIST_USED_GLOBALS and isValidGlobal and isValidGlobal(globalKey) then table_insert(usedGlobals, globalKey) end
 			                self:emit(globalKey .. " = " .. self:getReg(A))
-			            elseif opName == "GETIMPORT" then
-			                local count = bit32_rshift(aux, 30)
-			                local id0 = bit32_band(bit32_rshift(aux, 20), 0x3FF)
-			                local id1 = bit32_band(bit32_rshift(aux, 10), 0x3FF)
-			                local id2 = bit32_band(aux, 0x3FF)
-			            
-			                local function getClean(idx)
-			                    local c = self:getConstant(idx)
-			                    return c:gsub('^"', ''):gsub('"$', '')
-			                end
-			            
-			                local path = ""
-			                if count == 1 then
-			                    path = getClean(id0)
-			                elseif count == 2 then
-			                    path = getClean(id0) .. "." .. getClean(id1)
-			                elseif count == 3 then
-			                    path = getClean(id0) .. "." .. getClean(id1) .. "." .. getClean(id2)
-			                end
-			            
-			                self:setReg(A, path, PREC.ATOMIC)
+						elseif opName == "GETIMPORT" then
+						    local count = bit32_rshift(aux, 30)
+						    local id0 = bit32_band(bit32_rshift(aux, 20), 0x3FF)
+						    local id1 = bit32_band(bit32_rshift(aux, 10), 0x3FF)
+						    local id2 = bit32_band(aux, 0x3FF)
+						
+						    local function getClean(idx)
+						        local c = self:getConstant(idx)
+						        return c:gsub('^"', ''):gsub('"$', '')
+						    end
+						
+						    local path = ""
+						    if count == 1 then
+						        path = getClean(id0)
+						    elseif count == 2 then
+						        path = getClean(id0) .. "." .. getClean(id1)
+						    elseif count == 3 then
+						        path = getClean(id0) .. "." .. getClean(id1) .. "." .. getClean(id2)
+						    end
+						
+						    self:setReg(A, path, PREC.DOT)
+						    
+						    if path == "game" or path == "string" or path == "math" or path == "table" then
+						        if self.registers[A] then
+						            self.registers[A].isGlobal = true
+						        end
+						    end
 			            elseif opName == "GETUPVAL" then
 			                self:setReg(A, self:getUpvalue(B), PREC.ATOMIC)
 			            elseif opName == "SETUPVAL" then
@@ -2152,16 +2159,19 @@ local function Decompile(bytecode)
 			                    self:setReg(A, "{" .. table_concat(tbl.items, ", ") .. "}", PREC.ATOMIC)
 			                end
 			
-			            elseif opName == "GETTABLEKS" then
-			                local source = self:getReg(B)
-			                local rawKey = self:getConstant(aux)
-			                local cleanKey = rawKey:gsub('^"', ''):gsub('"$', '')
-			            
-			                if isValidIdentifier(cleanKey) then
-			                    self:setReg(A, source .. "." .. cleanKey, PREC.ATOMIC)
-			                else
-			                    self:setReg(A, string.format('%s[%q]', source, cleanKey), PREC.ATOMIC)
-			                end
+						elseif opName == "GETTABLEKS" then
+						    local source = self:getReg(B)
+						    local rawKey = self:getConstant(aux)
+						    local cleanKey = rawKey:gsub('^"', ''):gsub('"$', '')
+						
+						    local expr = ""
+						    if isValidIdentifier(cleanKey) then
+						        expr = source .. "." .. cleanKey
+						    else
+						        expr = string.format('%s[%q]', source, cleanKey)
+						    end
+						
+						    self:setReg(A, expr, PREC.DOT)
 			            elseif opName == "SETTABLEKS" then
 			                local targetName = self:getReg(B)
 			                local rawKey = self:getConstant(aux)
