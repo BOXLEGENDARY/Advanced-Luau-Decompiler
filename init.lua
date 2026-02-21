@@ -1991,6 +1991,35 @@ local function Decompile(bytecode)
 				    return self:getReg(index)
 				end
 
+				local function isValidIdentifier(str)
+				    if type(str) ~= "string" or str == "" then return false end
+				    
+				    if str:match("^%d") then return false end
+				    
+				    if not str:match("^[%w_]+$") then return false end
+				    
+				local reserved = {
+					    ["and"] = true, ["break"] = true, ["do"] = true, ["else"] = true,
+					    ["elseif"] = true, ["end"] = true, ["false"] = true, ["for"] = true,
+					    ["function"] = true, ["if"] = true, ["in"] = true, ["local"] = true,
+					    ["nil"] = true, ["not"] = true, ["or"] = true, ["repeat"] = true,
+					    ["return"] = true, ["then"] = true, ["true"] = true, ["until"] = true, 
+					    ["while"] = true,
+					    ["continue"] = true,
+					    ["export"] = true,
+					    ["type"] = true,
+					    ["typeof"] = true,
+					    ["self"] = true,
+					    ["any"] = true, ["boolean"] = true, ["number"] = true, 
+					    ["string"] = true, ["thread"] = true, ["unknown"] = true, 
+					    ["void"] = true, ["never"] = true
+					}
+				    
+				    if reserved[str] then return false end
+				    
+				    return true
+				end
+
 				while self.pc <= self.length do
 				    local pc = self.pc
 				
