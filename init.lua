@@ -1781,7 +1781,8 @@ local function Decompile(bytecode)
 			local Context = {}
 			Context.__index = Context
 			
-			local DEBUG_OPCODES = false
+			--- do not touch only developer.
+			local DEBUG_OPCODES = true
 			
 			function Context.new(proto, protoId, depth)
 			    local self = setmetatable({}, Context)
@@ -1841,17 +1842,26 @@ local function Decompile(bytecode)
 			    if debugName then return debugName end
 			
 			    local reg = self.registers[index]
-			    if reg then
-			        local name = reg.text
-			        
-			        if minPrio and reg.prio and reg.prio < minPrio then
-			            if string.match(name, "[%s%+%-%%%*%^/<>=~]") and not string.match(name, "^\"[^\"]*\"$") and not string.match(name, "^%-%d") then
-			                return "(" .. name .. ")"
-			            end
-			        end
-			        return name
+			    
+			    if not reg then 
+			        return "v" .. index 
 			    end
-			    return ("v%d"):format(index)
+			
+			    local name = reg.text
+			
+			    if name == "{}" then
+			        name = "v" .. index
+			    end
+			
+			    if minPrio and reg.prio and reg.prio < minPrio then
+			        if string.match(name, "[%s%+%-%%%*%^/<>=~]") and 
+			           not string.match(name, "^\"[^\"]*\"$") and 
+			           not string.match(name, "^%-%d") then
+			            return "(" .. name .. ")"
+			        end
+			    end
+			
+			    return name
 			end
 			
 			function Context:setReg(index, expr, priority)
