@@ -1,7 +1,7 @@
 # Advanced Luau Decompiler
 > **Status:** Version beta
 
-Based on the original Advanced Decompiler V3 by `w-a-e`. Currently maintained and updated by `ZxL`, striving to improve stability and fix existing issues. Hopefully, it helps.
+i just update or fix something check credits
 
 optdec ( die )
 
