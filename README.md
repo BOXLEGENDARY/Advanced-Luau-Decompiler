@@ -1,7 +1,7 @@
 # Advanced Luau Decompiler
 > **Status:** Version beta
 
-i just update or fix something check credits
+Just updated and fixed some stuff. Check the credits.
 
 optdec ( die )
 
