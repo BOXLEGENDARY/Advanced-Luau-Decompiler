@@ -1090,7 +1090,7 @@ local function Decompile(bytecode)
 							local importIndices = extraData[2]
 
 							-- we load imports into constants
-							local import = tostring(constants[importIndex + 1].value)
+							local import = tostring(constants[importIndex].value)
 
 							local totalIndices = bit32.rshift(importIndices, 30)
 							if totalIndices == 1 then
