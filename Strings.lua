@@ -1,6 +1,6 @@
 local BaseStrings = {
-    os.date("%Y-%m-%d %H:%M:%S"),
-    "-- Decompiler By Advanced Luau Decompiler\n",
+    "Decompiler By Advanced Luau Decompiler",
+    os.date("%Y-%m-%d %H:%M:%S\n"),
 }
 
 local CombinedBaseString = table.concat(BaseStrings, "\n")
