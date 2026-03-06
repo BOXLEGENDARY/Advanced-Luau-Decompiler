@@ -288,9 +288,9 @@ local function Decompile(bytecode)
 					    local cacheIndex3 = bit32.band(id, 0x3FF)
 					
 					    local path = {}
-					    if indexCount >= 1 then table.insert(path, stringTable[cacheIndex1 + 1]) end
-					    if indexCount >= 2 then table.insert(path, stringTable[cacheIndex2 + 1]) end
-					    if indexCount >= 3 then table.insert(path, stringTable[cacheIndex3 + 1]) end
+					    if indexCount >= 1 then table.insert(path, stringTable[cacheIndex1]) end
+					    if indexCount >= 2 then table.insert(path, stringTable[cacheIndex2]) end
+					    if indexCount >= 3 then table.insert(path, stringTable[cacheIndex3]) end
 					
 					    constValue = table.concat(path, ".")
 					elseif constType == LuauBytecodeTag.LBC_CONSTANT_TABLE then
