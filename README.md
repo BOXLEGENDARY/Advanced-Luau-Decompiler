@@ -5,7 +5,7 @@
 
 > **Status:** Version beta
 
-Too much testing in the long run.
+Too many problems and too much testing in the long run. Better to rewrite it.
 
 ~~Just updated new bytecode and fixed some stuff. Check the credits.~~
 
