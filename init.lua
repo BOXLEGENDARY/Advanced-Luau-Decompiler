@@ -690,11 +690,11 @@ local function Decompile(bytecode)
 					elseif opCodeName == "ANDK" or opCodeName == "ORK" then
 						registerAction({A, B}, {C})
 					elseif opCodeName == "CONCAT" then
-						local registers = {A}
-						for reg = B, C do
-							table.insert(registers, reg)
-						end
-						registerAction(registers)
+					    local registers = {}					
+					    for reg = B, C do
+					        table.insert(registers, reg)
+					    end					
+					    registerAction(registers)
 					elseif opCodeName == "NOT" or opCodeName == "MINUS" or opCodeName == "LENGTH" then
 						registerAction({A, B})
 					elseif opCodeName == "NEWTABLE" then
