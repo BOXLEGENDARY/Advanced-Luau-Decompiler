@@ -15,6 +15,7 @@ local TYPE_NAMES = {
 	[8] = "Vector3",
 	[9] = "buffer",
 	[15] = "any",
+	[64] = "CFrame",
 }
 
 -- lookup table for builtin function names
