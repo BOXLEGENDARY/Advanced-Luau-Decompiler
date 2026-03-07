@@ -5,9 +5,9 @@
 
 > **Status:** Version beta (Discontinued)
 
-Just updated new bytecode and fixed some stuff. Check the credits.
+Too much testing in the long run.
 
-optdec ( die )
+~~Just updated new bytecode and fixed some stuff. Check the credits.~~
 
 ---
 ## Loadstring
