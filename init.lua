@@ -950,7 +950,7 @@ local function Decompile(bytecode)
 									local parameterType = typedParams[index]
 									-- not sure if parameterType always exists
 									if parameterType then
-										parameterBody ..= ": " .. (Luau:GetBaseTypeString(parameterType, true) or "UnknownType_" .. tostring(parameterType))
+										parameterBody ..= ": ".. Luau:GetBaseTypeString(parameterType, true)
 									end
 								end
 								-- if not last parameter
