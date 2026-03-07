@@ -3,7 +3,7 @@
 **NOTICE:** This project is now **closed** and will no longer receive updates.
 ***
 
-> **Status:** Version beta (Discontinued)
+> **Status:** Version beta
 
 Too much testing in the long run.
 
