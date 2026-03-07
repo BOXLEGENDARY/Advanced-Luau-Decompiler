@@ -692,7 +692,8 @@ function Luau:GetBaseTypeString(type, checkOptional)
 	local result = TYPE_NAMES[tag]
 
 	if not result then
-		error("Unhandled type in GetBaseTypeString", 2)
+		warn("DECOMPILER WARNING: Unhandled type detected! Tag:", tag, "Raw Type:", type)
+		result = "UNKNOWN_TYPE_" .. tostring(tag)
 	end
 
 	if checkOptional then
