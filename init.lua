@@ -690,7 +690,7 @@ local function Decompile(bytecode)
 					elseif opCodeName == "ANDK" or opCodeName == "ORK" then
 						registerAction({A, B}, {C})
 					elseif opCodeName == "CONCAT" then
-					    local registers = {}					
+					    local registers = {A}					
 					    for reg = B, C do
 					        table.insert(registers, reg)
 					    end					
@@ -950,7 +950,7 @@ local function Decompile(bytecode)
 									local parameterType = typedParams[index]
 									-- not sure if parameterType always exists
 									if parameterType then
-										parameterBody ..= ": ".. Luau:GetBaseTypeString(parameterType, true)
+										parameterBody ..= ": " .. (Luau:GetBaseTypeString(parameterType, true) or "UnknownType_" .. tostring(parameterType))
 									end
 								end
 								-- if not last parameter
