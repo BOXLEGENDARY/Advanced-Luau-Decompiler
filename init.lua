@@ -137,7 +137,7 @@ local function Decompile(bytecode)
 					end
 
 					local nameRef = reader:nextVarInt()
-					userdataTypes[index] = nameRef
+					userdataTypes[index] = stringTable[nameRef]
 				end
 			end
 		end
