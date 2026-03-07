@@ -1,5 +1,9 @@
 # Advanced Luau Decompiler
-> **Status:** Version beta
+***
+**NOTICE:** This project is now **closed** and will no longer receive updates.
+***
+
+> **Status:** Version beta (Discontinued)
 
 Just updated new bytecode and fixed some stuff. Check the credits.
 
