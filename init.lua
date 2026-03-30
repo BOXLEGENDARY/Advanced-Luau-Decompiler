@@ -33,44 +33,33 @@ else
 	LoadFromUrl = function(x)
 		local BASE_USER = "BOXLEGENDARY"
 		local BASE_BRANCH = "main"
-		local EXTENSIONS = {".luau", ".lua"}
-		local BASE_URL = "https://raw.githubusercontent.com/%s/Advanced-Luau-Decompiler/%s/%s%s"
+		local BASE_URL = "https://raw.githubusercontent.com/%s/Advanced-Luau-Decompiler/%s/%s.lua"
 
-		local loadResult
-		local success = false
+		local loadSuccess, loadResult = pcall(function()
+			local formattedUrl = string.format(BASE_URL, BASE_USER, BASE_BRANCH, x)
+			return game:HttpGet(formattedUrl, true)
+		end)
 
-		for _, ext in ipairs(EXTENSIONS) do
-			local pcallSuccess, pcallResult = pcall(function()
-				local formattedUrl = string.format(BASE_URL, BASE_USER, BASE_BRANCH, x, ext)
-				return game:HttpGet(formattedUrl, true)
-			end)
-
-			if pcallSuccess and pcallResult then
-				loadResult = pcallResult
-				success = true
-				break
-			end
-		end
-
-		if not success then
-			warn(`({math.random()}) MODULE {x} NOT FOUND`)
+		if not loadSuccess then
+			warn(`({math.random()}) MОDULE FАILЕD ТO LOАD FRОM URL: {loadResult}.`)
 			return
 		end
 
-		local loadSuccess, result = pcall(loadstring, loadResult)
-		if not loadSuccess then
-			warn(`({math.random()}) MODULE FAILED TO LOADSTRING: {result}`)
+		local success, result = pcall(loadstring, loadResult)
+		if not success then
+			warn(`({math.random()}) MОDULE FАILЕD ТO LOАDSТRING: {result}.`)
 			return
 		end
 
 		if type(result) ~= "function" then
-			warn(`MODULE {x} IS {tostring(result)} (function expected)`)
+			warn(`MОDULE IS {tostring(result)} (function expected)`)
 			return
 		end
 
 		return result()
 	end
 end
+
 local Implementations = LoadFromUrl("Implementations")
 local Reader = LoadFromUrl("Reader")
 local Strings = LoadFromUrl("Strings")
@@ -1818,10 +1807,6 @@ if not USE_IN_STUDIO then
 			end
 		end
 		
-		if not isScriptValid() then
-		    error("This script type is not supported for decompilation", 2)
-		end
-		
 		local success, result = pcall(getscriptbytecode, script)
 		if not success or type(result) ~= "string" then
 			error(`Couldn't decompile bytecode: {tostring(result)}`, 2)
@@ -1830,14 +1815,13 @@ if not USE_IN_STUDIO then
 		
 		local decomped, elapsedTime
 		
-	    if DECODE_AS_BASE64 then
-	        local inputBuffer = buffer.fromstring(result)
-	        local decodedBuffer = Base64.Decode(inputBuffer)
-	        local decodedString = buffer.tostring(decodedBuffer)
-	        decomped, elapsedTime = Decompile(decodedString)
-	    else
-	        decomped, elapsedTime = Decompile(result)
-	    end
+		if DECODE_AS_BASE64 then
+			local toDecode = buffer.fromstring(result)
+			local decoded = Base64.decode(toDecode)
+			decomped, elapsedTime = Decompile(result)
+		else
+			decomped, elapsedTime = Decompile(result)
+		end
 		
 		if RETURN_ELAPSED_TIME then
 			return decomped, elapsedTime
@@ -1847,10 +1831,9 @@ if not USE_IN_STUDIO then
 	end
 else
 	if DECODE_AS_BASE64 then
-        local inputBuffer = buffer.fromstring(input)
-        local decodedBuffer = Base64.Decode(inputBuffer)
-        local decodedString = buffer.tostring(decodedBuffer)
-		local decomped, elapsedTime = Decompile(decodedString) 
+		local toDecode = buffer.fromstring(input)
+		local decoded = Base64.decode(toDecode)
+		local decomped, elapsedTime = Decompile(buffer.tostring(decoded))
 		warn("done decompiling:", elapsedTime or 0)
 		
 		-- Some scripts like Criminality's GunClient are thousands of lines long, and directly setting string properties
@@ -1861,10 +1844,10 @@ else
 		end)
 	else
 		local decomped, elapsedTime = Decompile(input)
-        warn("done decompiling:", elapsedTime or 0)
-        
-        game:GetService("ScriptEditorService"):UpdateSourceAsync(workspace["Disassembler"].LocalScript, function()
-            return decomped
-        end)
-    end
+		warn("done decompiling:", elapsedTime or 0)
+		
+		game:GetService("ScriptEditorService"):UpdateSourceAsync(workspace["Disassembler"].LocalScript, function()
+			return decomped
+		end)
+	end
 end
