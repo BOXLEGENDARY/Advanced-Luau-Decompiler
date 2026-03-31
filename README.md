@@ -3,6 +3,7 @@
 better rewrite it
 
 no update anymore this is last time
+this version fast than original btw
 
 ---
 ## Loadstring
