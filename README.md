@@ -1,9 +1,10 @@
 # Advanced Luau Decompiler
 
-better rewrite it
+better to rewrite it.
 
-no update anymore this is last time
-this version fast than original btw
+no update anymore this is last time.
+
+this version fast than original btw.
 
 ---
 ## Loadstring
