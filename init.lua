@@ -775,10 +775,11 @@ local function Decompile(bytecode)
 		local totalParameters = 0
 		-- array of used globals for further output
 		local usedGlobals = {}
+		local usedGlobalsSet = {}
 
 		-- should `key` be logged in usedGlobals?
 		local function isValidGlobal(key)
-			return not table.find(usedGlobals, key) and not isGlobal(key)
+			return not usedGlobalsSet[key] and not isGlobal(key)
 		end
 
 		-- received result. embed final things here.
@@ -794,7 +795,7 @@ local function Decompile(bytecode)
 
 		-- now proceed based off mode
 		if DECOMPILER_MODE == "disasm" then -- disassembler
-			local result = ""
+			local result = {}
 
 			local function writeActions(protoActions)
 				local actions = protoActions.actions
@@ -808,7 +809,7 @@ local function Decompile(bytecode)
 
 				local numParams = proto.numParams
 
-				SHOW_INSTRUCTION_LINES = SHOW_INSTRUCTION_LINES and #instructionLineInfo > 0
+				local showInstructionLines = SHOW_INSTRUCTION_LINES and #instructionLineInfo > 0
 
 				-- for proper `goto` handling
 				local jumpMarkers = {}
@@ -826,7 +827,7 @@ local function Decompile(bytecode)
 				if proto.main then
 					-- if there is a possible way to check for --!optimize please let me know
 					if flags.native then
-						result ..= "--!native" .. "\n"
+						result[#result + 1] = "--!native" .. "\n"
 					end
 				end
 
@@ -849,14 +850,14 @@ local function Decompile(bytecode)
 
 							--if string.find(opCodeName, "JUMP") then
 							-- it's much more complicated
-							--	result ..= "else\n"
+							--	result[#result + 1] = "else\n"
 
 							--	local newJumpOffset = i + extraData[1] + 1
 							--	makeJumpMarker(newJumpOffset)
 							--else
 							-- it's just a one way condition
 							for i = 1, numJumpMarkers do
-								result ..= "end\n"
+								result[#result + 1] = "end\n"
 							end
 							--end
 						end
@@ -878,13 +879,13 @@ local function Decompile(bytecode)
 						end
 
 						local line
-						if SHOW_INSTRUCTION_LINES then
+						if showInstructionLines then
 							line = ":".. padLeft(instructionLineInfo[i], "0", 3) ..":"
 						else
 							line = ""
 						end
 
-						result ..= index .." ".. line .. name
+						result[#result + 1] = index .." ".. line .. name
 					end
 					local function writeOperationBody()
 						local function formatRegister(register)
@@ -992,49 +993,49 @@ local function Decompile(bytecode)
 
 							local name = proto.name
 							if name then
-								result ..= "\n".. protoBody
+								result[#result + 1] = "\n".. protoBody
 								writeActions(registerActions[proto.id])
-								result ..= "end\n".. formatRegister(register) .." = ".. name
+								result[#result + 1] = "end\n".. formatRegister(register) .." = ".. name
 							else
-								result ..= formatRegister(register) .." = ".. protoBody
+								result[#result + 1] = formatRegister(register) .." = ".. protoBody
 								writeActions(registerActions[proto.id])
-								result ..= "end"
+								result[#result + 1] = "end"
 							end
 						end
 
 						if opCodeName == "LOADNIL" then
 							local targetRegister = usedRegisters[1]
 
-							result ..= formatRegister(targetRegister) .." = nil"
+							result[#result + 1] = formatRegister(targetRegister) .." = nil"
 						elseif opCodeName == "LOADB" then -- load boolean
 							local targetRegister = usedRegisters[1]
 
 							local value = toBoolean(extraData[1])
 							local jumpOffset = extraData[2]
 
-							result ..= formatRegister(targetRegister) .." = ".. toEscapedString(value)
+							result[#result + 1] = formatRegister(targetRegister) .." = ".. toEscapedString(value)
 
 							if jumpOffset ~= 0 then
 								-- skip over next LOADB?
-								result ..= string.format(" +%i", jumpOffset)
+								result[#result + 1] = string.format(" +%i", jumpOffset)
 							end
 						elseif opCodeName == "LOADN" then -- load number literal
 							local targetRegister = usedRegisters[1]
 
 							local value = extraData[1]
 
-							result ..= formatRegister(targetRegister) .." = ".. value
+							result[#result + 1] = formatRegister(targetRegister) .." = ".. value
 						elseif opCodeName == "LOADK" then -- load constant
 							local targetRegister = usedRegisters[1]
 
 							local value = formatConstantValue(constants[extraData[1] + 1])
 
-							result ..= formatRegister(targetRegister) .." = ".. value
+							result[#result + 1] = formatRegister(targetRegister) .." = ".. value
 						elseif opCodeName == "MOVE" then
 							local targetRegister = usedRegisters[1]
 							local sourceRegister = usedRegisters[2]
 
-							result ..= formatRegister(targetRegister) .." = ".. formatRegister(sourceRegister)
+							result[#result + 1] = formatRegister(targetRegister) .." = ".. formatRegister(sourceRegister)
 						elseif opCodeName == "GETGLOBAL" then
 							local targetRegister = usedRegisters[1]
 
@@ -1042,36 +1043,38 @@ local function Decompile(bytecode)
 							local globalKey = tostring(constants[extraData[1] + 1].value)
 
 							if LIST_USED_GLOBALS and isValidGlobal(globalKey) then
-								table.insert(usedGlobals, globalKey)
+								usedGlobalsSet[globalKey] = true
+								usedGlobals[#usedGlobals + 1] = globalKey
 							end
 
-							result ..= formatRegister(targetRegister) .." = ".. globalKey
+							result[#result + 1] = formatRegister(targetRegister) .." = ".. globalKey
 						elseif opCodeName == "SETGLOBAL" then
 							local sourceRegister = usedRegisters[1]
 
 							local globalKey = tostring(constants[extraData[1] + 1].value)
 
 							if LIST_USED_GLOBALS and isValidGlobal(globalKey) then
-								table.insert(usedGlobals, globalKey)
+								usedGlobalsSet[globalKey] = true
+								usedGlobals[#usedGlobals + 1] = globalKey
 							end
 
-							result ..= globalKey .." = ".. formatRegister(sourceRegister)
+							result[#result + 1] = globalKey .." = ".. formatRegister(sourceRegister)
 						elseif opCodeName == "GETUPVAL" then
 							local targetRegister = usedRegisters[1]
 
 							local upvalueIndex = extraData[1]
 
-							result ..= formatRegister(targetRegister) .." = ".. formatUpvalue(captures[upvalueIndex])
+							result[#result + 1] = formatRegister(targetRegister) .." = ".. formatUpvalue(captures[upvalueIndex])
 						elseif opCodeName == "SETUPVAL" then
 							local targetRegister = usedRegisters[1]
 
 							local upvalueIndex = extraData[1]
 
-							result ..= formatUpvalue(captures[upvalueIndex]) .. " = " .. formatRegister(targetRegister)
+							result[#result + 1] = formatUpvalue(captures[upvalueIndex]) .. " = " .. formatRegister(targetRegister)
 						elseif opCodeName == "CLOSEUPVALS" then
 							local targetRegister = usedRegisters[1]
 
-							result ..= "-- clear captures from back until: ".. targetRegister
+							result[#result + 1] = "-- clear captures from back until: ".. targetRegister
 						elseif opCodeName == "GETIMPORT" then
 							local targetRegister = usedRegisters[1]
 
@@ -1085,23 +1088,24 @@ local function Decompile(bytecode)
 							if totalIndices == 1 then
 								if LIST_USED_GLOBALS and isValidGlobal(import) then
 									-- it is a non-Roblox global that we need to log
-									table.insert(usedGlobals, import)
+								usedGlobalsSet[import] = true
+								usedGlobals[#usedGlobals + 1] = import
 								end
 							end
 
-							result ..= formatRegister(targetRegister) .." = ".. import
+							result[#result + 1] = formatRegister(targetRegister) .." = ".. import
 						elseif opCodeName == "GETTABLE" then
 							local targetRegister = usedRegisters[1]
 							local tableRegister = usedRegisters[2]
 							local indexRegister = usedRegisters[3]
 
-							result ..= formatRegister(targetRegister) .." = ".. formatRegister(tableRegister) .."[".. formatRegister(indexRegister) .."]"
+							result[#result + 1] = formatRegister(targetRegister) .." = ".. formatRegister(tableRegister) .."[".. formatRegister(indexRegister) .."]"
 						elseif opCodeName == "SETTABLE" then
 							local sourceRegister = usedRegisters[1]
 							local tableRegister = usedRegisters[2]
 							local indexRegister = usedRegisters[3]
 
-							result ..= formatRegister(tableRegister) .."[".. formatRegister(indexRegister) .."]" .." = ".. formatRegister(sourceRegister)
+							result[#result + 1] = formatRegister(tableRegister) .."[".. formatRegister(indexRegister) .."]" .." = ".. formatRegister(sourceRegister)
 						elseif opCodeName == "GETTABLEKS" then
 							local targetRegister = usedRegisters[1]
 							local tableRegister = usedRegisters[2]
@@ -1109,7 +1113,7 @@ local function Decompile(bytecode)
 							--local slotIndex = extraData[1]
 							local key = constants[extraData[2] + 1].value
 
-							result ..= formatRegister(targetRegister) .." = ".. formatRegister(tableRegister) .. formatIndexString(key)
+							result[#result + 1] = formatRegister(targetRegister) .." = ".. formatRegister(tableRegister) .. formatIndexString(key)
 						elseif opCodeName == "SETTABLEKS" then
 							local sourceRegister = usedRegisters[1]
 							local tableRegister = usedRegisters[2]
@@ -1117,21 +1121,21 @@ local function Decompile(bytecode)
 							--local slotIndex = extraData[1]
 							local key = constants[extraData[2] + 1].value
 
-							result ..= formatRegister(tableRegister) .. formatIndexString(key) .." = ".. formatRegister(sourceRegister)
+							result[#result + 1] = formatRegister(tableRegister) .. formatIndexString(key) .." = ".. formatRegister(sourceRegister)
 						elseif opCodeName == "GETTABLEN" then
 							local targetRegister = usedRegisters[1]
 							local tableRegister = usedRegisters[2]
 
 							local index = extraData[1] + 1
 
-							result ..= formatRegister(targetRegister) .." = ".. formatRegister(tableRegister) .."[".. index .."]"
+							result[#result + 1] = formatRegister(targetRegister) .." = ".. formatRegister(tableRegister) .."[".. index .."]"
 						elseif opCodeName == "SETTABLEN" then
 							local sourceRegister = usedRegisters[1]
 							local tableRegister = usedRegisters[2]
 
 							local index = extraData[1] + 1
 
-							result ..= formatRegister(tableRegister) .."[".. index .."] = ".. formatRegister(sourceRegister)
+							result[#result + 1] = formatRegister(tableRegister) .."[".. index .."] = ".. formatRegister(sourceRegister)
 						elseif opCodeName == "NEWCLOSURE" then
 							local targetRegister = usedRegisters[1]
 
@@ -1153,7 +1157,7 @@ local function Decompile(bytecode)
 							--local slotIndex = extraData[1]
 							local method = tostring(constants[extraData[2] + 1].value)
 
-							result ..= "-- :".. method
+							result[#result + 1] = "-- :".. method
 						elseif opCodeName == "CALL" then
 							local baseRegister = usedRegisters[1]
 
@@ -1217,7 +1221,7 @@ local function Decompile(bytecode)
 							-- finale
 							callBody ..= ")"
 
-							result ..= callBody
+							result[#result + 1] = callBody
 						elseif opCodeName == "RETURN" then
 							local baseRegister = usedRegisters[1]
 
@@ -1238,7 +1242,7 @@ local function Decompile(bytecode)
 								end
 							end
 
-							result ..= "return".. retBody
+							result[#result + 1] = "return".. retBody
 						elseif opCodeName == "JUMP" then
 							local jumpOffset = extraData[1]
 
@@ -1247,7 +1251,7 @@ local function Decompile(bytecode)
 
 							--makeJumpMarker(endIndex)
 
-							result ..= "-- jump to #" .. endIndex
+							result[#result + 1] = "-- jump to #" .. endIndex
 						elseif opCodeName == "JUMPBACK" then
 							local jumpOffset = extraData[1] + 1
 
@@ -1256,164 +1260,164 @@ local function Decompile(bytecode)
 
 							--makeJumpMarker(endIndex)
 
-							result ..= "-- jump back to #" .. endIndex
+							result[#result + 1] = "-- jump back to #" .. endIndex
 						elseif opCodeName == "JUMPIF" then
 						    local sourceRegister = usedRegisters[1]
 						    local endIndex = i + extraData[1]
 						    makeJumpMarker(endIndex)
-						    result ..= string.format("if %s then -- goto #%d", formatRegister(sourceRegister), endIndex)
+						    result[#result + 1] = string.format("if %s then -- goto #%d", formatRegister(sourceRegister), endIndex)
 						
 						elseif opCodeName == "JUMPIFNOT" then
 						    local sourceRegister = usedRegisters[1]
 						    local endIndex = i + extraData[1]
 						    makeJumpMarker(endIndex)
-						    result ..= string.format("if not %s then -- goto #%d", formatRegister(sourceRegister), endIndex)
+						    result[#result + 1] = string.format("if not %s then -- goto #%d", formatRegister(sourceRegister), endIndex)
 						
 						elseif opCodeName == "JUMPIFEQ" then
 						    local left = usedRegisters[1]
 						    local right = usedRegisters[2]
 						    local endIndex = i + extraData[1]
 						    makeJumpMarker(endIndex)
-						    result ..= string.format("if %s == %s then -- goto #%d", formatRegister(left), formatRegister(right), endIndex)
+						    result[#result + 1] = string.format("if %s == %s then -- goto #%d", formatRegister(left), formatRegister(right), endIndex)
 						
 						elseif opCodeName == "JUMPIFNOTEQ" then
 						    local left = usedRegisters[1]
 						    local right = usedRegisters[2]
 						    local endIndex = i + extraData[1]
 						    makeJumpMarker(endIndex)
-						    result ..= string.format("if %s ~= %s then -- goto #%d", formatRegister(left), formatRegister(right), endIndex)
+						    result[#result + 1] = string.format("if %s ~= %s then -- goto #%d", formatRegister(left), formatRegister(right), endIndex)
 						
 						elseif opCodeName == "JUMPIFLT" then
 						    local left = usedRegisters[1]
 						    local right = usedRegisters[2]
 						    local endIndex = i + extraData[1]
 						    makeJumpMarker(endIndex)
-						    result ..= string.format("if %s < %s then -- goto #%d", formatRegister(left), formatRegister(right), endIndex)
+						    result[#result + 1] = string.format("if %s < %s then -- goto #%d", formatRegister(left), formatRegister(right), endIndex)
 						
 						elseif opCodeName == "JUMPIFLE" then
 						    local left = usedRegisters[1]
 						    local right = usedRegisters[2]
 						    local endIndex = i + extraData[1]
 						    makeJumpMarker(endIndex)
-						    result ..= string.format("if %s <= %s then -- goto #%d", formatRegister(left), formatRegister(right), endIndex)
+						    result[#result + 1] = string.format("if %s <= %s then -- goto #%d", formatRegister(left), formatRegister(right), endIndex)
 						
 						elseif opCodeName == "JUMPIFNOTLT" then
 						    local left = usedRegisters[1]
 						    local right = usedRegisters[2]
 						    local endIndex = i + extraData[1]
 						    makeJumpMarker(endIndex)
-						    result ..= string.format("if %s >= %s then -- goto #%d", formatRegister(left), formatRegister(right), endIndex)
+						    result[#result + 1] = string.format("if %s >= %s then -- goto #%d", formatRegister(left), formatRegister(right), endIndex)
 						
 						elseif opCodeName == "JUMPIFNOTLE" then
 						    local left = usedRegisters[1]
 						    local right = usedRegisters[2]
 						    local endIndex = i + extraData[1]
 						    makeJumpMarker(endIndex)
-						    result ..= string.format("if %s > %s then -- goto #%d", formatRegister(left), formatRegister(right), endIndex)					
+						    result[#result + 1] = string.format("if %s > %s then -- goto #%d", formatRegister(left), formatRegister(right), endIndex)					
 						elseif opCodeName == "ADD" then
 							local targetRegister = usedRegisters[1]
 							local leftRegister = usedRegisters[2]
 							local rightRegister = usedRegisters[3]
 
-							result ..= formatRegister(targetRegister) .." = ".. formatRegister(leftRegister) .." + ".. formatRegister(rightRegister)
+							result[#result + 1] = formatRegister(targetRegister) .." = ".. formatRegister(leftRegister) .." + ".. formatRegister(rightRegister)
 						elseif opCodeName == "SUB" then
 							local targetRegister = usedRegisters[1]
 							local leftRegister = usedRegisters[2]
 							local rightRegister = usedRegisters[3]
 
-							result ..= formatRegister(targetRegister) .." = ".. formatRegister(leftRegister) .." - ".. formatRegister(rightRegister)
+							result[#result + 1] = formatRegister(targetRegister) .." = ".. formatRegister(leftRegister) .." - ".. formatRegister(rightRegister)
 						elseif opCodeName == "MUL" then
 							local targetRegister = usedRegisters[1]
 							local leftRegister = usedRegisters[2]
 							local rightRegister = usedRegisters[3]
 
-							result ..= formatRegister(targetRegister) .." = ".. formatRegister(leftRegister) .." * ".. formatRegister(rightRegister)
+							result[#result + 1] = formatRegister(targetRegister) .." = ".. formatRegister(leftRegister) .." * ".. formatRegister(rightRegister)
 						elseif opCodeName == "DIV" then
 							local targetRegister = usedRegisters[1]
 							local leftRegister = usedRegisters[2]
 							local rightRegister = usedRegisters[3]
 
-							result ..= formatRegister(targetRegister) .." = ".. formatRegister(leftRegister) .." / ".. formatRegister(rightRegister)
+							result[#result + 1] = formatRegister(targetRegister) .." = ".. formatRegister(leftRegister) .." / ".. formatRegister(rightRegister)
 						elseif opCodeName == "MOD" then
 							local targetRegister = usedRegisters[1]
 							local leftRegister = usedRegisters[2]
 							local rightRegister = usedRegisters[3]
 
-							result ..= formatRegister(targetRegister) .." = ".. formatRegister(leftRegister) .." % ".. formatRegister(rightRegister)
+							result[#result + 1] = formatRegister(targetRegister) .." = ".. formatRegister(leftRegister) .." % ".. formatRegister(rightRegister)
 						elseif opCodeName == "POW" then
 							local targetRegister = usedRegisters[1]
 							local leftRegister = usedRegisters[2]
 							local rightRegister = usedRegisters[3]
 
-							result ..= formatRegister(targetRegister) .." = ".. formatRegister(leftRegister) .." ^ ".. formatRegister(rightRegister)
+							result[#result + 1] = formatRegister(targetRegister) .." = ".. formatRegister(leftRegister) .." ^ ".. formatRegister(rightRegister)
 						elseif opCodeName == "ADDK" then
 							local targetRegister = usedRegisters[1]
 							local sourceRegister = usedRegisters[2]
 
 							local value = formatConstantValue(constants[extraData[1] + 1])
 
-							result ..= formatRegister(targetRegister) .." = ".. formatRegister(sourceRegister) .." + ".. value
+							result[#result + 1] = formatRegister(targetRegister) .." = ".. formatRegister(sourceRegister) .." + ".. value
 						elseif opCodeName == "SUBK" then
 							local targetRegister = usedRegisters[1]
 							local sourceRegister = usedRegisters[2]
 
 							local value = formatConstantValue(constants[extraData[1] + 1])
 
-							result ..= formatRegister(targetRegister) .." = ".. formatRegister(sourceRegister) .." - ".. value
+							result[#result + 1] = formatRegister(targetRegister) .." = ".. formatRegister(sourceRegister) .." - ".. value
 						elseif opCodeName == "MULK" then
 							local targetRegister = usedRegisters[1]
 							local sourceRegister = usedRegisters[2]
 
 							local value = formatConstantValue(constants[extraData[1] + 1])
 
-							result ..= formatRegister(targetRegister) .." = ".. formatRegister(sourceRegister) .." * ".. value
+							result[#result + 1] = formatRegister(targetRegister) .." = ".. formatRegister(sourceRegister) .." * ".. value
 						elseif opCodeName == "DIVK" then
 							local targetRegister = usedRegisters[1]
 							local sourceRegister = usedRegisters[2]
 
 							local value = formatConstantValue(constants[extraData[1] + 1])
 
-							result ..= formatRegister(targetRegister) .." = ".. formatRegister(sourceRegister) .." / ".. value
+							result[#result + 1] = formatRegister(targetRegister) .." = ".. formatRegister(sourceRegister) .." / ".. value
 						elseif opCodeName == "MODK" then
 							local targetRegister = usedRegisters[1]
 							local sourceRegister = usedRegisters[2]
 
 							local value = formatConstantValue(constants[extraData[1] + 1])
 
-							result ..= formatRegister(targetRegister) .." = ".. formatRegister(sourceRegister) .." % ".. value
+							result[#result + 1] = formatRegister(targetRegister) .." = ".. formatRegister(sourceRegister) .." % ".. value
 						elseif opCodeName == "POWK" then
 							local targetRegister = usedRegisters[1]
 							local sourceRegister = usedRegisters[2]
 
 							local value = formatConstantValue(constants[extraData[1] + 1])
 
-							result ..= formatRegister(targetRegister) .." = ".. formatRegister(sourceRegister) .." ^ ".. value
+							result[#result + 1] = formatRegister(targetRegister) .." = ".. formatRegister(sourceRegister) .." ^ ".. value
 						elseif opCodeName == "AND" then
 							local targetRegister = usedRegisters[1]
 							local leftRegister = usedRegisters[2]
 							local rightRegister = usedRegisters[3]
 
-							result ..= formatRegister(targetRegister) .." = ".. formatRegister(leftRegister) .." and ".. formatRegister(rightRegister)
+							result[#result + 1] = formatRegister(targetRegister) .." = ".. formatRegister(leftRegister) .." and ".. formatRegister(rightRegister)
 						elseif opCodeName == "OR" then
 							local targetRegister = usedRegisters[1]
 							local leftRegister = usedRegisters[2]
 							local rightRegister = usedRegisters[3]
 
-							result ..= formatRegister(targetRegister) .." = ".. formatRegister(leftRegister) .." or ".. formatRegister(rightRegister)
+							result[#result + 1] = formatRegister(targetRegister) .." = ".. formatRegister(leftRegister) .." or ".. formatRegister(rightRegister)
 						elseif opCodeName == "ANDK" then
 							local targetRegister = usedRegisters[1]
 							local sourceRegister = usedRegisters[2]
 
 							local value = formatConstantValue(constants[extraData[1] + 1])
 
-							result ..= formatRegister(targetRegister) .." = ".. formatRegister(sourceRegister) .." and ".. value
+							result[#result + 1] = formatRegister(targetRegister) .." = ".. formatRegister(sourceRegister) .." and ".. value
 						elseif opCodeName == "ORK" then
 							local targetRegister = usedRegisters[1]
 							local sourceRegister = usedRegisters[2]
 
 							local value = formatConstantValue(constants[extraData[1] + 1])
 
-							result ..= formatRegister(targetRegister) .." = ".. formatRegister(sourceRegister) .." or ".. value
+							result[#result + 1] = formatRegister(targetRegister) .." = ".. formatRegister(sourceRegister) .." or ".. value
 						elseif opCodeName == "CONCAT" then
 							local targetRegister = usedRegisters[1]
 							local concatBody = ""
@@ -1427,32 +1431,32 @@ local function Decompile(bytecode)
 								end
 							end
 							
-							result ..= formatRegister(targetRegister) .." = ".. concatBody
+							result[#result + 1] = formatRegister(targetRegister) .." = ".. concatBody
 						elseif opCodeName == "NOT" then
 							local targetRegister = usedRegisters[1]
 							local sourceRegister = usedRegisters[2]
 
-							result ..= formatRegister(targetRegister) .." = not ".. formatRegister(sourceRegister)
+							result[#result + 1] = formatRegister(targetRegister) .." = not ".. formatRegister(sourceRegister)
 						elseif opCodeName == "MINUS" then
 							local targetRegister = usedRegisters[1]
 							local sourceRegister = usedRegisters[2]
 
-							result ..= formatRegister(targetRegister) .." = -".. formatRegister(sourceRegister)
+							result[#result + 1] = formatRegister(targetRegister) .." = -".. formatRegister(sourceRegister)
 						elseif opCodeName == "LENGTH" then
 							local targetRegister = usedRegisters[1]
 							local sourceRegister = usedRegisters[2]
 
-							result ..= formatRegister(targetRegister) .." = #".. formatRegister(sourceRegister)
+							result[#result + 1] = formatRegister(targetRegister) .." = #".. formatRegister(sourceRegister)
 						elseif opCodeName == "NEWTABLE" then
 							local targetRegister = usedRegisters[1]
 
 							--local tableHashSize = extraData[1]
 							local arraySize = extraData[2]
 
-							result ..= formatRegister(targetRegister) .." = {}"
+							result[#result + 1] = formatRegister(targetRegister) .." = {}"
 
 							if SHOW_DEBUG_INFORMATION and arraySize > 0 then
-								result ..= " --[[".. arraySize .." preallocated indexes]]"
+								result[#result + 1] = " --[[".. arraySize .." preallocated indexes]]"
 							end
 						elseif opCodeName == "DUPTABLE" then
 							local targetRegister = usedRegisters[1]
@@ -1474,7 +1478,7 @@ local function Decompile(bytecode)
 							end
 							tableBody ..= "}"
 
-							result ..= formatRegister(targetRegister) .." = {} -- ".. tableBody
+							result[#result + 1] = formatRegister(targetRegister) .." = {} -- ".. tableBody
 						elseif opCodeName == "SETLIST" then
 							local targetRegister = usedRegisters[1]
 							local sourceRegister = usedRegisters[2]
@@ -1496,7 +1500,7 @@ local function Decompile(bytecode)
 									end
 								end
 							end
-							result ..= changeBody
+							result[#result + 1] = changeBody
 						elseif opCodeName == "FORNPREP" then
 							local targetRegister = usedRegisters[1]
 							local stepRegister = usedRegisters[2]
@@ -1511,7 +1515,7 @@ local function Decompile(bytecode)
 							--makeJumpMarker(endIndex)
 
 							local numericStartBody = "for ".. formatRegister(indexRegister) .." = ".. formatRegister(indexRegister) ..", ".. formatRegister(targetRegister) ..", ".. formatRegister(stepRegister) .." do -- end at #".. endIndex
-							result ..= numericStartBody
+							result[#result + 1] = numericStartBody
 						elseif opCodeName == "FORNLOOP" then
 							local targetRegister = usedRegisters[1]
 
@@ -1521,7 +1525,7 @@ local function Decompile(bytecode)
 							local endIndex = i + jumpOffset
 
 							local numericEndBody = "end -- iterate + jump to #".. endIndex
-							result ..= numericEndBody
+							result[#result + 1] = numericEndBody
 						elseif opCodeName == "FORGLOOP" then
 							local jumpOffset = extraData[1]
 							--local aux = extraData[2]
@@ -1530,19 +1534,19 @@ local function Decompile(bytecode)
 							local endIndex = i + jumpOffset
 
 							local genericEndBody = "end -- iterate + jump to #".. endIndex
-							result ..= genericEndBody
+							result[#result + 1] = genericEndBody
 						elseif opCodeName == "FORGPREP_INEXT" then
 							local targetRegister = usedRegisters[1]
 							
 							local variablesBody = formatRegister(targetRegister + 2) ..", ".. formatRegister(targetRegister + 3)
 							
-							result ..= "for ".. variablesBody .." in ipairs(".. formatRegister(targetRegister) ..") do"
+							result[#result + 1] = "for ".. variablesBody .." in ipairs(".. formatRegister(targetRegister) ..") do"
 						elseif opCodeName == "FORGPREP_NEXT" then
 							local targetRegister = usedRegisters[1]
 							
 							local variablesBody = formatRegister(targetRegister + 2) ..", ".. formatRegister(targetRegister + 3)
 
-							result ..= "for ".. variablesBody .." in pairs(".. formatRegister(targetRegister) ..") do -- could be doing next, t"
+							result[#result + 1] = "for ".. variablesBody .." in pairs(".. formatRegister(targetRegister) ..") do -- could be doing next, t"
 						elseif opCodeName == "FORGPREP" then
 							local targetRegister = usedRegisters[1]
 
@@ -1565,31 +1569,31 @@ local function Decompile(bytecode)
 								end
 							end
 
-							result ..= "for ".. variablesBody .." in ".. formatRegister(targetRegister) .." do -- end at #".. endIndex
+							result[#result + 1] = "for ".. variablesBody .." in ".. formatRegister(targetRegister) .." do -- end at #".. endIndex
 						elseif opCodeName == "GETVARARGS" then
 						    local targetBase = usedRegisters[1] -- A
 						    local bCount = extraData[1] -- B
 						    
 						    if bCount == 0 then
-						        result ..= formatRegister(targetBase) .. ", ... = ..."
+						        result[#result + 1] = formatRegister(targetBase) .. ", ... = ..."
 						    else
 						        local actualCount = bCount - 1
 						        local regs = {}
 						        for i = 0, actualCount - 1 do
 						            table.insert(regs, formatRegister(targetBase + i))
 						        end
-						        result ..= table.concat(regs, ", ") .. " = ..."
+						        result[#result + 1] = table.concat(regs, ", ") .. " = ..."
 						    end
 						elseif opCodeName == "PREPVARARGS" then
 							local numParams = extraData[1]
 
-							result ..= "-- ... ; number of fixed args: ".. numParams
+							result[#result + 1] = "-- ... ; number of fixed args: ".. numParams
 						elseif opCodeName == "LOADKX" then
 							local targetRegister = usedRegisters[1]
 
 							local value = formatConstantValue(constants[extraData[1] + 1])
 
-							result ..= formatRegister(targetRegister) .." = ".. value
+							result[#result + 1] = formatRegister(targetRegister) .." = ".. value
 						elseif opCodeName == "JUMPX" then -- the cooler jump
 							local jumpOffset = extraData[1]
 
@@ -1598,11 +1602,11 @@ local function Decompile(bytecode)
 
 							--makeJumpMarker(endIndex)
 
-							result ..= "-- jump to #" .. endIndex
+							result[#result + 1] = "-- jump to #" .. endIndex
 						elseif opCodeName == "COVERAGE" then
 							local hitCount = extraData[1]
 
-							result ..= "-- coverage (".. hitCount ..")"
+							result[#result + 1] = "-- coverage (".. hitCount ..")"
 						elseif opCodeName == "JUMPXEQKNIL" then
 							local sourceRegister = usedRegisters[1]
 							local jumpOffset = extraData[1] 
@@ -1613,7 +1617,7 @@ local function Decompile(bytecode)
 
 							local endIndex = i + jumpOffset
 							makeJumpMarker(endIndex)
-							result ..= "if ".. formatRegister(sourceRegister) .." ".. sign .." nil then -- goto #".. endIndex
+							result[#result + 1] = "if ".. formatRegister(sourceRegister) .." ".. sign .." nil then -- goto #".. endIndex
 						elseif opCodeName == "JUMPXEQKB" then
 							local sourceRegister = usedRegisters[1]
 							local jumpOffset = extraData[1] 
@@ -1626,7 +1630,7 @@ local function Decompile(bytecode)
 
 							local endIndex = i + jumpOffset
 							makeJumpMarker(endIndex)
-							result ..= "if ".. formatRegister(sourceRegister) .." ".. sign .." ".. value .." then -- goto #".. endIndex
+							result[#result + 1] = "if ".. formatRegister(sourceRegister) .." ".. sign .." ".. value .." then -- goto #".. endIndex
 						elseif opCodeName == "JUMPXEQKN" then
 							local sourceRegister = usedRegisters[1]
 							local jumpOffset = extraData[1] 
@@ -1639,7 +1643,7 @@ local function Decompile(bytecode)
 
 							local endIndex = i + jumpOffset
 							makeJumpMarker(endIndex)
-							result ..= "if ".. formatRegister(sourceRegister) .." ".. sign .." ".. value .." then -- goto #".. endIndex
+							result[#result + 1] = "if ".. formatRegister(sourceRegister) .." ".. sign .." ".. value .." then -- goto #".. endIndex
 						elseif opCodeName == "JUMPXEQKS" then
 							local sourceRegister = usedRegisters[1]
 							local jumpOffset = extraData[1] 
@@ -1652,61 +1656,61 @@ local function Decompile(bytecode)
 
 							local endIndex = i + jumpOffset
 							makeJumpMarker(endIndex)
-							result ..= "if ".. formatRegister(sourceRegister) .." ".. sign .." ".. value .." then -- goto #".. endIndex							
+							result[#result + 1] = "if ".. formatRegister(sourceRegister) .." ".. sign .." ".. value .." then -- goto #".. endIndex							
 						elseif opCodeName == "CAPTURE" then
-							result ..= "-- upvalue capture"
+							result[#result + 1] = "-- upvalue capture"
 						elseif opCodeName == "SUBRK" then -- constant sub (reverse SUBK)
 							local targetRegister = usedRegisters[1]
 							local sourceRegister = usedRegisters[2]
 
 							local value = formatConstantValue(constants[extraData[1] + 1])
 
-							result ..= formatRegister(targetRegister) .." = ".. value .." - ".. formatRegister(sourceRegister)
+							result[#result + 1] = formatRegister(targetRegister) .." = ".. value .." - ".. formatRegister(sourceRegister)
 						elseif opCodeName == "DIVRK" then -- constant div (reverse DIVK)
 							local targetRegister = usedRegisters[1]
 							local sourceRegister = usedRegisters[2]
 
 							local value = formatConstantValue(constants[extraData[1] + 1])
 
-							result ..= formatRegister(targetRegister) .." = ".. value .." / ".. formatRegister(sourceRegister)
+							result[#result + 1] = formatRegister(targetRegister) .." = ".. value .." / ".. formatRegister(sourceRegister)
 						elseif opCodeName == "IDIV" then
-						    result ..= formatRegister(usedRegisters[1]) .. " = " .. formatRegister(usedRegisters[2]) .. " // " .. formatRegister(usedRegisters[3])
+						    result[#result + 1] = formatRegister(usedRegisters[1]) .. " = " .. formatRegister(usedRegisters[2]) .. " // " .. formatRegister(usedRegisters[3])
 						elseif opCodeName == "IDIVK" then
 						    local value = formatConstantValue(constants[extraData[1] + 1])
-						    result ..= formatRegister(usedRegisters[1]) .. " = " .. formatRegister(usedRegisters[2]) .. " // " .. value
+						    result[#result + 1] = formatRegister(usedRegisters[1]) .. " = " .. formatRegister(usedRegisters[2]) .. " // " .. value
 						elseif opCodeName == "FASTCALL" then
 							local bfid = extraData[1]
 							local builtinName = Luau:GetBuiltinInfo(bfid) or "unknown"
 
-							result ..= "-- " .. opCodeName .. "; " .. builtinName .. "()"						
+							result[#result + 1] = "-- " .. opCodeName .. "; " .. builtinName .. "()"						
 						elseif opCodeName == "FASTCALL1" then -- 1 register argument
 							local sourceArgumentRegister = usedRegisters[1]
 							local bfid = extraData[1] -- builtin function id
 
-							result ..= "-- FASTCALL1; ".. Luau:GetBuiltinInfo(bfid) .."(".. formatRegister(sourceArgumentRegister) ..")"
+							result[#result + 1] = "-- FASTCALL1; ".. Luau:GetBuiltinInfo(bfid) .."(".. formatRegister(sourceArgumentRegister) ..")"
 						elseif opCodeName == "FASTCALL2" then -- 2 register arguments
 							local sourceArgumentRegister = usedRegisters[1]
 							local sourceArgumentRegister2 = usedRegisters[2]
 							local bfid = extraData[1] -- builtin function id
 
-							result ..= "-- FASTCALL2; ".. Luau:GetBuiltinInfo(bfid) .."(".. formatRegister(sourceArgumentRegister) ..", ".. formatRegister(sourceArgumentRegister2) ..")"
+							result[#result + 1] = "-- FASTCALL2; ".. Luau:GetBuiltinInfo(bfid) .."(".. formatRegister(sourceArgumentRegister) ..", ".. formatRegister(sourceArgumentRegister2) ..")"
 						elseif opCodeName == "FASTCALL2K" then -- 1 register argument and 1 constant argument
 							local sourceArgumentRegister = usedRegisters[1]
 							local bfid = extraData[1] -- builtin function id
 							local value = formatConstantValue(constants[extraData[3] + 1])
 
-							result ..= "-- FASTCALL2K; ".. Luau:GetBuiltinInfo(bfid) .."(".. formatRegister(sourceArgumentRegister) ..", ".. value ..")"
+							result[#result + 1] = "-- FASTCALL2K; ".. Luau:GetBuiltinInfo(bfid) .."(".. formatRegister(sourceArgumentRegister) ..", ".. value ..")"
 						elseif opCodeName == "FASTCALL3" then
 							local sourceArgumentRegister = usedRegisters[1]
 							local sourceArgumentRegister2 = usedRegisters[2]
 							local sourceArgumentRegister3 = usedRegisters[3]
 							local bfid = extraData[1] -- builtin function id
 
-							result ..= "-- FASTCALL3; ".. Luau:GetBuiltinInfo(bfid) .."(".. formatRegister(sourceArgumentRegister) ..", ".. formatRegister(sourceArgumentRegister2) ..", ".. formatRegister(sourceArgumentRegister3) ..")"
+							result[#result + 1] = "-- FASTCALL3; ".. Luau:GetBuiltinInfo(bfid) .."(".. formatRegister(sourceArgumentRegister) ..", ".. formatRegister(sourceArgumentRegister2) ..", ".. formatRegister(sourceArgumentRegister3) ..")"
 						end
 					end
 					local function writeFooter()
-						result ..= "\n"
+						result[#result + 1] = "\n"
 					end
 
 					writeHeader()
@@ -1718,7 +1722,7 @@ local function Decompile(bytecode)
 			end
 			writeActions(registerActions[mainProtoId])
 
-			finalResult = processResult(result)
+			finalResult = processResult(table.concat(result))
 		else -- assume optdec - optimized decompiler
 			local result = ""
 			-- remove temporary registers and some optimization passes
